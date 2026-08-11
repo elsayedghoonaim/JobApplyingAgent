@@ -1,0 +1,44 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environment ──
+.venv/
+venv/
+ENV/
+
+# ── Environment secrets (NEVER commit) ──
+.env
+
+# ── Runtime outputs (logs, cover letters, screenshots) ──
+outputs/
+scripts/outputs/
+.agy-runs/
+
+# Personal application data (commit sanitized examples only)
+src/jobapply/data/profile.yaml
+src/jobapply/data/resume.md
+src/jobapply/data/resume.pdf
+user-data/
+
+# ── Editor / IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Debug artifacts ──
+debug_linkedin.*
+*.html
+*.png
