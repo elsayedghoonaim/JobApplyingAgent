@@ -11,6 +11,10 @@ build/
 .venv/
 venv/
 ENV/
+.clean_test_venv/
+.coverage
+coverage.xml
+htmlcov/
 
 # ── Environment secrets (NEVER commit) ──
 .env
@@ -20,11 +24,11 @@ outputs/
 scripts/outputs/
 .agy-runs/
 
-# Personal application data (commit sanitized examples only)
+# Personal application data (commit sanitized templates/examples only)
+user-data/
 src/jobapply/data/profile.yaml
 src/jobapply/data/resume.md
 src/jobapply/data/resume.pdf
-user-data/
 
 # ── Editor / IDE ──
 .vscode/

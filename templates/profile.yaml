@@ -1,0 +1,15 @@
+name: "Jane Doe"
+email: "jane.doe@example.com"
+phone: "+15550100"
+location: "San Francisco, CA"
+linkedin: "https://linkedin.com/in/janedoe"
+github: "https://github.com/janedoe"
+summary: "Experienced Software Engineer specializing in Python, AI, and Machine Learning."
+skills:
+  - Python
+  - Machine Learning
+  - PyTorch
+  - LangChain
+form_defaults:
+  years_of_experience: "5"
+  highest_education: "Master's Degree"

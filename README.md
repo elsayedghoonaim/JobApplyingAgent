@@ -13,10 +13,11 @@ uses an existing signed-in Microsoft Edge session.
 - Resume edits require Telegram approval.
 - Application agreements require confirmation unless explicitly enabled in `.env`.
 - Job descriptions are treated as untrusted LLM input.
+- Personal application data is stored outside package code in an ignored `user-data/` directory.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11+ with `uv`
 - MongoDB on `mongodb://localhost:27017`
 - Microsoft Edge
 - Google API key with access to `gemma-4-31b-it`
@@ -25,22 +26,37 @@ uses an existing signed-in Microsoft Edge session.
 ## Installation
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-playwright install chromium
+# Install dependencies with uv
+uv sync --extra dev
+
+# Install Playwright browser binaries
+uv run playwright install chromium
+
+# Copy environment template
 Copy-Item .env.example .env
+
+# Initialize ignored user-data directory from tracked templates
+New-Item -ItemType Directory -Force user-data
+Copy-Item templates\* user-data\
 ```
 
-Fill every value in `.env`. The only LLM variables are:
+Fill every required value in `.env`. The LLM settings are:
 
 ```env
 GOOGLE_API_KEY=...
 JOBAPPLY_LLM_MODEL=gemma-4-31b-it
 JOBAPPLY_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+JOBAPPLY_DATA_DIR=user-data
 ```
 
 `JOBAPPLY_LLM_MODEL` is validated and cannot select another model.
+`JOBAPPLY_DATA_DIR` defaults to `user-data` and points to the repository-local or absolute directory containing `profile.yaml`, `resume.md`, and `resume.pdf`.
+
+## User Data & Templates
+
+- Tracked template files live in `templates/` (`templates/profile.yaml`, `templates/resume.md`, `templates/resume.pdf`).
+- Real candidate documents live in `user-data/` (or the location configured by `JOBAPPLY_DATA_DIR`).
+- `user-data/` and legacy paths under `src/jobapply/data/` are ignored by Git and excluded from package wheels.
 
 ## Start the signed-in Edge session
 
@@ -83,23 +99,23 @@ To verify Edge, LinkedIn, MongoDB, and configuration without processing jobs:
 
 ## Verification
 
-Run isolated unit/component tests:
+Run all repository quality gates offline:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe scripts\component_check.py --telegram
+uv lock --check
+uv sync --extra dev
+uv run ruff format --check .
+uv run ruff check .
+uv run pyright
+uv run pytest -q
+uv build
 ```
 
-Run the Gemma rate-limit probe:
+Run bounded dry-run checks:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\stress_test.py --phase A
-```
-
-Run one bounded dry-run job:
-
-```powershell
-.\.venv\Scripts\python.exe -m jobapply.main --dry-run --max-jobs 1 --max-applications 1
+uv run python scripts/component_check.py --telegram
+uv run python -m jobapply.main --dry-run --max-jobs 1 --max-applications 1
 ```
 
 Only use `--no-dry-run` after reviewing a successful dry run.
@@ -107,7 +123,7 @@ Only use `--no-dry-run` after reviewing a successful dry run.
 ## Resume an interrupted run
 
 ```powershell
-jobapply --run-id <run-id>
+uv run jobapply --run-id <run-id>
 ```
 
 Pending checkpoints resume without reinitializing the graph. A completed run
@@ -115,13 +131,14 @@ returns its saved result instead of starting again.
 
 ## Project layout
 
+- `templates/`: tracked sanitized profile and resume templates
+- `user-data/`: ignored directory for real profile.yaml, resume.md, and resume.pdf
 - `src/jobapply/graph.py`: workflow and routing
 - `src/jobapply/nodes/`: search, qualification, generation, approval, execution, notification
 - `src/jobapply/utils/llm.py`: Gemma-only REST client
 - `src/jobapply/utils/telegram.py`: checked Telegram messaging
 - `src/jobapply/utils/dedup.py`: shared MongoDB persistence
 - `scripts/component_check.py`: bounded live component checks
-- `scripts/gemma_rate_limit_test.py`: rate-limit diagnostics
 - `tests/`: isolated workflow tests
 
 Runtime logs, generated letters, edited resumes, and screenshots are written

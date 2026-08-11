@@ -1,6 +1,6 @@
 """State schema for LangGraph."""
 
-from typing import TypedDict, Optional
+from typing import Optional, TypedDict
 
 
 class JobApplyState(TypedDict):

@@ -1,11 +1,11 @@
-import pytest
 from jobapply.graph import (
-    route_select_next_job,
-    route_after_qualification,
-    route_after_generation,
     route_after_approval,
+    route_after_generation,
+    route_after_qualification,
     route_post_processing,
+    route_select_next_job,
 )
+
 
 def test_route_select_next_job():
     state = {"search_failed": True}

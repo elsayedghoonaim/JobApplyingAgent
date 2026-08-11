@@ -32,10 +32,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_env(path: Path) -> dict[str, str]:
     """Minimal .env parser - no external dependencies."""
@@ -69,6 +69,7 @@ def _banner(title: str, width: int = 66) -> str:
 # Result
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Result:
     req_id: int
@@ -86,6 +87,7 @@ class Result:
 # ---------------------------------------------------------------------------
 # Single request
 # ---------------------------------------------------------------------------
+
 
 async def fire(
     req_id: int,
@@ -134,16 +136,24 @@ async def fire(
             data = json.loads(body_text)
             reply = (
                 data.get("candidates", [{}])[0]
-                    .get("content", {})
-                    .get("parts", [{}])[0]
-                    .get("text", "")[:80]
+                .get("content", {})
+                .get("parts", [{}])[0]
+                .get("text", "")[:80]
             )
         except Exception:
             reply = body_text[:80]
 
-        return Result(req_id=req_id, phase=phase, status=status, latency=latency,
-                      success=True, rate_limited=False,
-                      retry_after=retry_after, rl_headers=rl_hdrs, reply=reply)
+        return Result(
+            req_id=req_id,
+            phase=phase,
+            status=status,
+            latency=latency,
+            success=True,
+            rate_limited=False,
+            retry_after=retry_after,
+            rl_headers=rl_hdrs,
+            reply=reply,
+        )
 
     except urllib.error.HTTPError as exc:
         latency = time.perf_counter() - start
@@ -152,20 +162,35 @@ async def fire(
         rl_hdrs = {k: v for k, v in resp_hdrs.items() if "ratelimit" in k or "retry" in k}
         retry_after = resp_hdrs.get("retry-after", "")
         is_rl = exc.code in (429, 503)
-        return Result(req_id=req_id, phase=phase, status=exc.code, latency=latency,
-                      success=False, rate_limited=is_rl,
-                      error_msg=err_body, retry_after=retry_after, rl_headers=rl_hdrs)
+        return Result(
+            req_id=req_id,
+            phase=phase,
+            status=exc.code,
+            latency=latency,
+            success=False,
+            rate_limited=is_rl,
+            error_msg=err_body,
+            retry_after=retry_after,
+            rl_headers=rl_hdrs,
+        )
 
     except Exception as exc:
         latency = time.perf_counter() - start
-        return Result(req_id=req_id, phase=phase, status=None, latency=latency,
-                      success=False, rate_limited=False,
-                      error_msg=f"{type(exc).__name__}: {exc}")
+        return Result(
+            req_id=req_id,
+            phase=phase,
+            status=None,
+            latency=latency,
+            success=False,
+            rate_limited=False,
+            error_msg=f"{type(exc).__name__}: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
 # Burst
 # ---------------------------------------------------------------------------
+
 
 async def run_burst(
     phase: str,
@@ -207,20 +232,23 @@ async def run_burst(
 # Phase summary
 # ---------------------------------------------------------------------------
 
+
 def print_summary(phase: str, concurrency: int, results: list[Result]) -> None:
     total = len(results)
-    ok    = sum(1 for r in results if r.success)
-    rl    = sum(1 for r in results if r.rate_limited)
-    errs  = total - ok - rl
-    lats  = [r.latency for r in results if r.success]
+    ok = sum(1 for r in results if r.success)
+    rl = sum(1 for r in results if r.rate_limited)
+    errs = total - ok - rl
+    lats = [r.latency for r in results if r.success]
 
     print(f"\n  Phase {phase} summary  ({concurrency} requests sent)")
     print(f"  [OK]  Success      : {ok}/{total}")
     print(f"  [RL]  Rate limited : {rl}/{total}  (HTTP 429/503)")
     print(f"  [XX]  Other errors : {errs}/{total}")
     if lats:
-        print(f"  [TM]  Latency      : avg={sum(lats)/len(lats):.2f}s  "
-              f"min={min(lats):.2f}s  max={max(lats):.2f}s")
+        print(
+            f"  [TM]  Latency      : avg={sum(lats) / len(lats):.2f}s  "
+            f"min={min(lats):.2f}s  max={max(lats):.2f}s"
+        )
 
     # Collect unique RL header values
     all_rl: dict[str, set[str]] = {}
@@ -236,6 +264,7 @@ def print_summary(phase: str, concurrency: int, results: list[Result]) -> None:
 # ---------------------------------------------------------------------------
 # Warm-up
 # ---------------------------------------------------------------------------
+
 
 async def warmup(api_key: str, base_url: str, model: str) -> bool:
     """Probe the endpoint. Returns True on success, False only on auth failure (401/403).
@@ -263,25 +292,24 @@ async def warmup(api_key: str, base_url: str, model: str) -> bool:
     return False
 
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 async def main(args: argparse.Namespace) -> None:
     repo_root = Path(__file__).resolve().parent.parent
     env = _load_env(repo_root / ".env")
 
-    api_key  = env.get("GOOGLE_API_KEY", "")
-    base_url = env.get("JOBAPPLY_LLM_BASE_URL",
-                       "https://generativelanguage.googleapis.com/v1beta")
+    api_key = env.get("GOOGLE_API_KEY", "")
+    base_url = env.get("JOBAPPLY_LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
     # Strip /openai suffix if present (legacy .env values)
     base_url = base_url.removesuffix("/openai")
     model = env.get("JOBAPPLY_LLM_MODEL", "gemma-4-31b-it")
     if model != "gemma-4-31b-it":
         print("ERROR: JOBAPPLY_LLM_MODEL must be gemma-4-31b-it.", file=sys.stderr)
         sys.exit(1)
-    prompt   = args.prompt
+    prompt = args.prompt
 
     if not api_key:
         print("ERROR: GOOGLE_API_KEY not found in .env - aborting.", file=sys.stderr)
@@ -291,7 +319,9 @@ async def main(args: argparse.Namespace) -> None:
 
     ok = await warmup(api_key, base_url, model)
     if not ok:
-        print("\nERROR: Warm-up failed - check your GOOGLE_API_KEY and model name.", file=sys.stderr)
+        print(
+            "\nERROR: Warm-up failed - check your GOOGLE_API_KEY and model name.", file=sys.stderr
+        )
         sys.exit(1)
 
     # Define phases
@@ -313,15 +343,15 @@ async def main(args: argparse.Namespace) -> None:
         print_summary(phase, concurrency, results)
 
         if list(phases_to_run)[-1] != phase:
-            print(f"\n  Cooling down 5s before next phase ...", flush=True)
+            print("\n  Cooling down 5s before next phase ...", flush=True)
             await asyncio.sleep(5)
 
     # Overall summary (only when multiple phases ran)
     if len(all_results) > 1:
         print(_banner("Overall Summary"))
         total_req = sum(len(v) for v in all_results.values())
-        total_ok  = sum(r.success for v in all_results.values() for r in v)
-        total_rl  = sum(r.rate_limited for v in all_results.values() for r in v)
+        total_ok = sum(r.success for v in all_results.values() for r in v)
+        total_rl = sum(r.rate_limited for v in all_results.values() for r in v)
         print(f"  Total requests        : {total_req}")
         print(f"  Succeeded             : {total_ok}")
         print(f"  Rate limited (429/503): {total_rl}")
@@ -340,11 +370,14 @@ async def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemma 4 31B rate limit tester")
     parser.add_argument(
-        "--phase", choices=["A", "B", "C"],
+        "--phase",
+        choices=["A", "B", "C"],
         help="Run a single phase: A=5, B=15, C=30 concurrent. Default: all three.",
     )
     parser.add_argument(
-        "--concurrency", type=int, metavar="N",
+        "--concurrency",
+        type=int,
+        metavar="N",
         help="Custom burst size (overrides --phase).",
     )
     parser.add_argument(

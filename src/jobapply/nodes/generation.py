@@ -1,22 +1,21 @@
 """Generation node - cover letter + urgency check."""
 
 import os
-import re
 
 import yaml
 from langsmith.run_helpers import trace
 
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
+from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
 from jobapply.utils.prompts import get_cover_letter_prompt, get_urgency_check_prompt
 from jobapply.utils.tracing import get_safe_job_metadata
-from jobapply.utils.json_output import extract_json_object
 
 
 def _data_path(*parts: str) -> str:
-    """Build an absolute path under src/jobapply/data."""
-    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", *parts)
+    """Build an absolute path under configured data_dir."""
+    return get_settings().resolve_data_path(*parts)
 
 
 async def generation_node(state: JobApplyState) -> dict:
@@ -46,7 +45,12 @@ async def generation_node(state: JobApplyState) -> dict:
 
     if not current_job:
         error_msg = "Generation skipped: no current job selected"
-        return {**updates, "application_status": "failed", "application_error": error_msg, "errors": errors + [error_msg]}
+        return {
+            **updates,
+            "application_status": "failed",
+            "application_error": error_msg,
+            "errors": errors + [error_msg],
+        }
 
     profile_text = ""
     try:
@@ -78,7 +82,9 @@ async def generation_node(state: JobApplyState) -> dict:
         ) as run_tree:
             cover_letter_result = await llm.ainvoke(cover_letter_prompt)
             cover_letter_text = getattr(cover_letter_result, "content", str(cover_letter_result))
-            cover_letter_path = os.path.join(output_dir, f"cover_letter_{current_job['job_id']}.txt")
+            cover_letter_path = os.path.join(
+                output_dir, f"cover_letter_{current_job['job_id']}.txt"
+            )
 
             with open(cover_letter_path, "w", encoding="utf-8") as f:
                 f.write(cover_letter_text)
@@ -133,16 +139,22 @@ async def generation_node(state: JobApplyState) -> dict:
                 urgency_data = extract_json_object(urgency_text)
 
                 proposed_edits = urgency_data.get("proposed_edits") or ""
-                edits_urgent = bool(urgency_data.get("edits_urgent")) and bool(proposed_edits.strip())
+                edits_urgent = bool(urgency_data.get("edits_urgent")) and bool(
+                    proposed_edits.strip()
+                )
 
                 updates["edits_urgent"] = edits_urgent
                 updates["proposed_edits"] = proposed_edits if edits_urgent else None
-                updates["edit_reasoning"] = urgency_data.get("edit_reasoning") if edits_urgent else None
+                updates["edit_reasoning"] = (
+                    urgency_data.get("edit_reasoning") if edits_urgent else None
+                )
 
                 if run_tree:
                     run_tree.metadata["edits_urgent"] = edits_urgent
                     run_tree.metadata["has_proposed_edits"] = bool(proposed_edits)
         except Exception as e:
-            errors.append(f"Urgency check failed for {current_job.get('title', 'unknown job')}: {str(e)}")
+            errors.append(
+                f"Urgency check failed for {current_job.get('title', 'unknown job')}: {str(e)}"
+            )
 
     return {**updates, "errors": errors}

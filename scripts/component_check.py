@@ -7,8 +7,8 @@ from pathlib import Path
 import yaml
 
 from jobapply.models.job import QualificationResult
-from jobapply.nodes.generation import generation_node
 from jobapply.nodes.execution import extract_answer_from_reply
+from jobapply.nodes.generation import generation_node
 from jobapply.nodes.search import parse_job_description
 from jobapply.settings import get_settings
 from jobapply.utils.dedup import DeduplicationStore
@@ -35,7 +35,7 @@ async def run(send_telegram: bool) -> None:
     print("Gemma job parser: OK")
 
     profile = yaml.safe_load(
-        Path("src/jobapply/data/profile.yaml").read_text(encoding="utf-8")
+        Path(settings.resolve_data_path("profile.yaml")).read_text(encoding="utf-8")
     )
     sample_job = {
         "title": "Machine Learning Engineer",
@@ -52,9 +52,7 @@ async def run(send_telegram: bool) -> None:
     qualification_reply = await llm.ainvoke(
         get_qualification_prompt(yaml.safe_dump(profile), sample_job)
     )
-    qualification = QualificationResult(
-        **extract_json_object(qualification_reply.content)
-    )
+    qualification = QualificationResult(**extract_json_object(qualification_reply.content))
     print(f"Gemma qualification JSON: OK (score={qualification.score:.2f})")
 
     extracted_answer = await extract_answer_from_reply(

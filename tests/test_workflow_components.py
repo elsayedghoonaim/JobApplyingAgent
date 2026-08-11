@@ -14,10 +14,10 @@ from jobapply.nodes.execution import (
     STANDARD_TEXT_FIELD_SELECTOR,
     UserSkippedJob,
     ask_user_for_question,
-    classify_navigation_action,
     choice_is_unanswered,
-    extract_answer_from_reply,
+    classify_navigation_action,
     execution_node,
+    extract_answer_from_reply,
     find_already_applied_indicator,
     format_application_receipt,
     format_job_question_summary,
@@ -34,26 +34,26 @@ from jobapply.nodes.execution import (
     translate_question_for_telegram,
     wait_for_submission_confirmation,
 )
+from jobapply.nodes.notification import format_session_summary, notification_node
 from jobapply.nodes.qualification import qualification_node
 from jobapply.nodes.search import (
     build_search_url,
     find_applied_status_on_card,
     text_indicates_applied_card_status,
 )
-from jobapply.nodes.notification import format_session_summary, notification_node
 from jobapply.settings import get_settings
-from jobapply.utils.json_output import extract_json_object
+from jobapply.utils.browser import edge_debug_ports, edge_profile_path
+from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
     find_disallowed_required_languages,
     get_job_exclusion_reason,
     is_senior_position_title,
 )
+from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.limits import caps_reached
 from jobapply.utils.llm import _extract_text, get_llm
 from jobapply.utils.prompts import QUALIFICATION_PROMPT
 from jobapply.utils.telegram import TelegramClient, correlated_reply_text
-from jobapply.utils.browser import edge_debug_ports, edge_profile_path
-from jobapply.utils.dedup import DeduplicationStore
 
 
 def _base_state(**updates):
@@ -99,12 +99,16 @@ def test_env_has_every_documented_variable_and_no_old_provider_keys():
 
 def test_gemma_response_uses_non_thought_parts():
     data = {
-        "candidates": [{
-            "content": {"parts": [
-                {"text": "private reasoning", "thought": True},
-                {"text": "final answer"},
-            ]}
-        }]
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "private reasoning", "thought": True},
+                        {"text": "final answer"},
+                    ]
+                }
+            }
+        ]
     }
     assert _extract_text(data) == "final answer"
 
@@ -176,25 +180,46 @@ def test_mixed_mid_senior_titles_are_included(title):
 
 
 def test_only_mandatory_non_arabic_english_languages_are_excluded():
-    assert find_disallowed_required_languages({
-        "required_languages": ["English", "Arabic"],
-        "description": "German is a nice-to-have skill.",
-    }) == []
-    assert find_disallowed_required_languages({
-        "required_languages": ["English (C1)", "Arabic - fluent"],
-    }) == []
-    assert find_disallowed_required_languages({
-        "required_languages": ["English", "German"],
-    }) == ["German"]
-    assert find_disallowed_required_languages({
-        "description": "You must speak Spanish to support our customers.",
-    }) == ["Spanish"]
-    assert find_disallowed_required_languages({
-        "description": "You must be fluent in English and French.",
-    }) == ["French"]
-    assert find_disallowed_required_languages({
-        "description": "French is preferred but not required.",
-    }) == []
+    assert (
+        find_disallowed_required_languages(
+            {
+                "required_languages": ["English", "Arabic"],
+                "description": "German is a nice-to-have skill.",
+            }
+        )
+        == []
+    )
+    assert (
+        find_disallowed_required_languages(
+            {
+                "required_languages": ["English (C1)", "Arabic - fluent"],
+            }
+        )
+        == []
+    )
+    assert find_disallowed_required_languages(
+        {
+            "required_languages": ["English", "German"],
+        }
+    ) == ["German"]
+    assert find_disallowed_required_languages(
+        {
+            "description": "You must speak Spanish to support our customers.",
+        }
+    ) == ["Spanish"]
+    assert find_disallowed_required_languages(
+        {
+            "description": "You must be fluent in English and French.",
+        }
+    ) == ["French"]
+    assert (
+        find_disallowed_required_languages(
+            {
+                "description": "French is preferred but not required.",
+            }
+        )
+        == []
+    )
 
 
 @pytest.mark.parametrize(
@@ -495,8 +520,7 @@ async def test_gemma_translates_non_english_question_and_options(mock_get_llm):
     llm = AsyncMock()
     llm.ainvoke.return_value = SimpleNamespace(
         content=(
-            '{"question":"Are you legally authorized to work in Germany?*",'
-            '"options":["Yes","No"]}'
+            '{"question":"Are you legally authorized to work in Germany?*","options":["Yes","No"]}'
         )
     )
     mock_get_llm.return_value = llm
@@ -746,10 +770,12 @@ async def test_submission_requires_explicit_confirmation():
 @patch("jobapply.nodes.qualification.get_llm")
 async def test_qualification_stage_in_isolation(mock_get_llm, mock_store_class):
     llm = AsyncMock()
-    llm.ainvoke.return_value = SimpleNamespace(content=(
-        '{"qualified": true, "score": 0.82, "reasoning": "Strong match", '
-        '"key_matches": ["Python"], "gaps": [], "job_summary": "Build systems"}'
-    ))
+    llm.ainvoke.return_value = SimpleNamespace(
+        content=(
+            '{"qualified": true, "score": 0.82, "reasoning": "Strong match", '
+            '"key_matches": ["Python"], "gaps": [], "job_summary": "Build systems"}'
+        )
+    )
     mock_get_llm.return_value = llm
     store = MagicMock()
     store.mark_seen = AsyncMock()
@@ -837,13 +863,15 @@ async def test_notification_stage_in_isolation(mock_telegram_class):
         run_id="summary-test",
         current_query_index=0,
         search_queries=["ML Engineer"],
-        application_outcomes=[{
-            "status": "dry_run",
-            "title": "ML Engineer",
-            "company": "Acme",
-            "score": 0.8,
-            "qa_count": 0,
-        }],
+        application_outcomes=[
+            {
+                "status": "dry_run",
+                "title": "ML Engineer",
+                "company": "Acme",
+                "score": 0.8,
+                "qa_count": 0,
+            }
+        ],
     )
     result = await notification_node(state)
     assert result == {"notification_sent": True}

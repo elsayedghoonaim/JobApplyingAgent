@@ -1,7 +1,7 @@
 """Data models and schemas."""
 
+from .application import ApplicationResult, ApplicationStatus, DocumentBundle
 from .job import JobPosting, QualificationResult
-from .application import ApplicationStatus, DocumentBundle, ApplicationResult
 
 __all__ = [
     "JobPosting",

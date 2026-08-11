@@ -6,7 +6,6 @@ from typing import Any
 
 from jobapply.state import JobApplyState
 
-
 EDITED_RESUME_PREFIX = "edited_resume_"
 
 

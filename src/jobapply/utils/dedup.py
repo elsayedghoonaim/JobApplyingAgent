@@ -2,7 +2,9 @@
 
 from datetime import datetime, timezone
 from typing import ClassVar
+
 from motor.motor_asyncio import AsyncIOMotorClient
+
 from jobapply.settings import get_settings
 
 
@@ -17,9 +19,7 @@ class DeduplicationStore:
         if self.__class__._client is None:
             self.__class__._client = AsyncIOMotorClient(settings.mongodb_url)
         self.client = self.__class__._client
-        self.collection = self.client[settings.mongodb_db][
-            settings.seen_jobs_collection
-        ]
+        self.collection = self.client[settings.mongodb_db][settings.seen_jobs_collection]
 
     async def is_seen(self, job_id: str) -> bool:
         """Check if a job ID has been seen before.
@@ -46,7 +46,7 @@ class DeduplicationStore:
                     "job_id": job_id,
                     **metadata,
                     "evaluated_at": datetime.now(timezone.utc),
-                    "updated_at": datetime.now(timezone.utc)
+                    "updated_at": datetime.now(timezone.utc),
                 }
             },
             upsert=True,
@@ -58,11 +58,7 @@ class DeduplicationStore:
         Returns:
             Set of all seen job IDs.
         """
-        query = (
-            {"status": {"$nin": ["qualified", "dry_run"]}}
-            if for_live_run
-            else {}
-        )
+        query = {"status": {"$nin": ["qualified", "dry_run"]}} if for_live_run else {}
         cursor = self.collection.find(query, {"job_id": 1})
         return {doc["job_id"] async for doc in cursor}
 
@@ -73,10 +69,12 @@ class DeduplicationStore:
             Number of applications submitted today.
         """
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        return await self.collection.count_documents({
-            "applied_at": {"$gte": today},
-            "status": "submitted",
-        })
+        return await self.collection.count_documents(
+            {
+                "applied_at": {"$gte": today},
+                "status": "submitted",
+            }
+        )
 
     @classmethod
     async def close(cls) -> None:

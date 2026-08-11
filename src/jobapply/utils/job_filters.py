@@ -2,7 +2,6 @@
 
 import re
 
-
 _SENIOR_TITLE_PATTERN = re.compile(
     r"\b(?:senior|sr\.?|lead|principal|staff|manager|director|head|chief|"
     r"vice\s+president|vp|architect|ceo|cto|cio|cfo|coo)\b",
@@ -23,16 +22,65 @@ _ALLOWED_LANGUAGE_WORDS = {
 }
 
 _LANGUAGE_NAMES = (
-    "afrikaans", "albanian", "amharic", "armenian", "azerbaijani",
-    "basque", "bengali", "bosnian", "bulgarian", "burmese", "catalan",
-    "cantonese", "chinese", "croatian", "czech", "danish", "dutch",
-    "estonian", "farsi", "finnish", "french", "georgian", "german",
-    "greek", "gujarati", "hebrew", "hindi", "hungarian", "icelandic",
-    "indonesian", "italian", "japanese", "kannada", "korean", "latvian",
-    "lithuanian", "malay", "malayalam", "mandarin", "marathi",
-    "norwegian", "persian", "polish", "portuguese", "punjabi", "romanian",
-    "russian", "serbian", "slovak", "slovenian", "spanish", "swahili",
-    "swedish", "tamil", "telugu", "thai", "turkish", "ukrainian", "urdu",
+    "afrikaans",
+    "albanian",
+    "amharic",
+    "armenian",
+    "azerbaijani",
+    "basque",
+    "bengali",
+    "bosnian",
+    "bulgarian",
+    "burmese",
+    "catalan",
+    "cantonese",
+    "chinese",
+    "croatian",
+    "czech",
+    "danish",
+    "dutch",
+    "estonian",
+    "farsi",
+    "finnish",
+    "french",
+    "georgian",
+    "german",
+    "greek",
+    "gujarati",
+    "hebrew",
+    "hindi",
+    "hungarian",
+    "icelandic",
+    "indonesian",
+    "italian",
+    "japanese",
+    "kannada",
+    "korean",
+    "latvian",
+    "lithuanian",
+    "malay",
+    "malayalam",
+    "mandarin",
+    "marathi",
+    "norwegian",
+    "persian",
+    "polish",
+    "portuguese",
+    "punjabi",
+    "romanian",
+    "russian",
+    "serbian",
+    "slovak",
+    "slovenian",
+    "spanish",
+    "swahili",
+    "swedish",
+    "tamil",
+    "telugu",
+    "thai",
+    "turkish",
+    "ukrainian",
+    "urdu",
     "vietnamese",
 )
 _LANGUAGE_PATTERN = "|".join(
@@ -117,9 +165,7 @@ def find_disallowed_required_languages(job: dict) -> list[str]:
                 disallowed.append(language)
 
     for match in _REQUIRED_LANGUAGE_LIST_PATTERN.finditer(description):
-        language_list = next(
-            value for value in match.groupdict().values() if value is not None
-        )
+        language_list = next(value for value in match.groupdict().values() if value is not None)
         for language in _LANGUAGE_NAMES:
             if re.search(rf"(?<!\w){re.escape(language)}(?!\w)", language_list, re.IGNORECASE):
                 disallowed.append(language.title())
@@ -133,8 +179,7 @@ def get_job_exclusion_reason(job: dict) -> str | None:
         return "Senior-level position excluded by user preference"
     disallowed_languages = find_disallowed_required_languages(job)
     if disallowed_languages:
-        return (
-            "Job requires language(s) outside Arabic and English: "
-            + ", ".join(disallowed_languages)
+        return "Job requires language(s) outside Arabic and English: " + ", ".join(
+            disallowed_languages
         )
     return None

@@ -20,10 +20,7 @@ def correlated_reply_text(
     chat_id = str(message.get("chat", {}).get("id", ""))
     text = message.get("text", "")
     replied_to = message.get("reply_to_message", {}).get("message_id")
-    is_direct_reply = (
-        reply_to_message_id is not None
-        and replied_to == reply_to_message_id
-    )
+    is_direct_reply = reply_to_message_id is not None and replied_to == reply_to_message_id
     is_new_chat_message = (
         reply_to_message_id is not None
         and isinstance(message.get("message_id"), int)
@@ -54,7 +51,7 @@ class TelegramClient:
             run_type="tool",
             metadata={"message_length": len(text), "parse_mode": parse_mode or "plain"},
         ) as run_tree:
-            chunks = [text[index:index + 4096] for index in range(0, len(text), 4096)] or [""]
+            chunks = [text[index : index + 4096] for index in range(0, len(text), 4096)] or [""]
             message_id = None
             for chunk in chunks:
                 message_id = await self._send_single_message(chunk, parse_mode)
@@ -74,7 +71,9 @@ class TelegramClient:
             response.raise_for_status()
             data = response.json()
             if not data.get("ok"):
-                raise RuntimeError(f"Telegram sendMessage failed: {data.get('description', 'unknown error')}")
+                raise RuntimeError(
+                    f"Telegram sendMessage failed: {data.get('description', 'unknown error')}"
+                )
             return data.get("result", {}).get("message_id")
 
     async def wait_for_correlated_reply(
@@ -119,7 +118,9 @@ class TelegramClient:
                         if reply is not None:
                             if run_tree:
                                 run_tree.metadata.update(
-                                    get_telegram_metadata(nonce=nonce, timeout=timeout, timed_out=False)
+                                    get_telegram_metadata(
+                                        nonce=nonce, timeout=timeout, timed_out=False
+                                    )
                                 )
                             return reply
             if run_tree:

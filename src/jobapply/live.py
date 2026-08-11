@@ -12,7 +12,6 @@ from jobapply.utils.browser import managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.telegram import TelegramClient
 
-
 SIGNIN_PATH_MARKERS = (
     "/login",
     "/uas/",
@@ -42,9 +41,9 @@ def validate_local_configuration() -> None:
     if not os.getenv("GOOGLE_API_KEY"):
         raise RuntimeError("GOOGLE_API_KEY is missing from .env")
     required_files = (
-        Path("src/jobapply/data/profile.yaml"),
-        Path("src/jobapply/data/resume.md"),
-        Path("src/jobapply/data/resume.pdf"),
+        Path(settings.resolve_data_path("profile.yaml")),
+        Path(settings.resolve_data_path("resume.md")),
+        Path(settings.resolve_data_path("resume.pdf")),
     )
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
@@ -74,7 +73,9 @@ async def wait_for_linkedin_signin() -> None:
                         "window, then run the command again."
                     )
                 if not announced_wait:
-                    print("LinkedIn is not signed in. Complete sign-in in the visible Edge window...")
+                    print(
+                        "LinkedIn is not signed in. Complete sign-in in the visible Edge window..."
+                    )
                     announced_wait = True
                 await asyncio.sleep(2)
             print("LinkedIn sign-in: OK")

@@ -41,7 +41,7 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
                 return min(float(raw), 30.0)
     except (TypeError, ValueError):
         pass
-    return min(2.0 ** attempt, 8.0)
+    return min(2.0**attempt, 8.0)
 
 
 def _extract_text(data: dict[str, Any]) -> str:

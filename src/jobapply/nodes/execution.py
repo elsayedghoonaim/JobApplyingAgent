@@ -4,37 +4,53 @@ import asyncio
 import json
 import os
 import re
-from uuid import uuid4
 from datetime import datetime, timezone
+from uuid import uuid4
+
 from langsmith.run_helpers import trace
+
 from jobapply.nodes.outcomes import (
     append_application_outcome,
     build_application_outcome,
     resume_was_edited,
     state_list,
 )
-from jobapply.state import JobApplyState
-from jobapply.utils.browser import managed_browser, get_randomized_delay, take_error_screenshot
-from jobapply.utils.telegram import TelegramClient
-from jobapply.utils.dedup import DeduplicationStore
-from jobapply.utils.tracing import get_execution_metadata, get_safe_job_metadata
 from jobapply.settings import get_settings
+from jobapply.state import JobApplyState
+from jobapply.utils.browser import get_randomized_delay, managed_browser, take_error_screenshot
+from jobapply.utils.dedup import DeduplicationStore
+from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.limits import caps_reached
 from jobapply.utils.llm import get_llm
-from jobapply.utils.json_output import extract_json_object
-
+from jobapply.utils.telegram import TelegramClient
+from jobapply.utils.tracing import get_execution_metadata, get_safe_job_metadata
 
 # Field patterns the agent can auto-fill
 KNOWN_FIELD_PATTERNS = [
-    "phone", "email", "name", "first name", "last name",
-    "city", "linkedin", "github", "portfolio",
-    "education", "resume", "cv",
+    "phone",
+    "email",
+    "name",
+    "first name",
+    "last name",
+    "city",
+    "linkedin",
+    "github",
+    "portfolio",
+    "education",
+    "resume",
+    "cv",
 ]
 
 # Fields to auto-skip (not critical)
 AUTO_SKIP_PATTERNS = [
-    "gender", "race", "ethnicity", "veteran", "disability",
-    "diverse", "protected", "voluntary",
+    "gender",
+    "race",
+    "ethnicity",
+    "veteran",
+    "disability",
+    "diverse",
+    "protected",
+    "voluntary",
 ]
 
 CHOICE_PLACEHOLDERS = (
@@ -110,10 +126,12 @@ def format_job_question_summary(job: dict, qualification_result: dict | None) ->
         lines.append(f"Key matches: {', '.join(key_matches[:5])}")
     if job.get("url"):
         lines.extend(["", f"Job link: {job['url']}"])
-    lines.extend([
-        "",
-        "Application questions may follow. Reply /skip to any question to skip this job.",
-    ])
+    lines.extend(
+        [
+            "",
+            "Application questions may follow. Reply /skip to any question to skip this job.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -134,8 +152,10 @@ def match_choice_index(answer: str, options: list[str]) -> int | None:
         if normalized_answer == option:
             return index
     for index, option in enumerate(normalized_options):
-        if option and normalized_answer and (
-            normalized_answer in option or option in normalized_answer
+        if (
+            option
+            and normalized_answer
+            and (normalized_answer in option or option in normalized_answer)
         ):
             return index
     return None
@@ -230,9 +250,7 @@ async def select_radio_option(radio, fieldset) -> str:
     """Select a radio through its visible LinkedIn control, with a native fallback."""
     role_handle = None
     try:
-        role_handle = await radio.evaluate_handle(
-            "el => el.closest('[role=radio]')"
-        )
+        role_handle = await radio.evaluate_handle("el => el.closest('[role=radio]')")
         role_option = role_handle.as_element()
         if role_option and await role_option.is_visible():
             await role_option.click(timeout=5_000)
@@ -298,10 +316,7 @@ async def select_live_radio_option(
                 if _normalized_choice_text(current_question) != normalized_question:
                     continue
                 radios = await fieldset.query_selector_all("input[type='radio']")
-                labels = [
-                    await get_radio_option_label(radio, fieldset)
-                    for radio in radios
-                ]
+                labels = [await get_radio_option_label(radio, fieldset) for radio in radios]
                 matched = match_choice_index(option_text, labels)
                 if matched is None:
                     raise RuntimeError(
@@ -447,7 +462,9 @@ async def find_already_applied_indicator(page) -> str | None:
                 text = (await candidate.inner_text()).strip()
                 aria_label = (await candidate.get_attribute("aria-label") or "").strip()
                 evidence = text or aria_label
-                if text_indicates_already_applied(text) or text_indicates_already_applied(aria_label):
+                if text_indicates_already_applied(text) or text_indicates_already_applied(
+                    aria_label
+                ):
                     return evidence
     except Exception:
         return None
@@ -489,9 +506,7 @@ async def extract_answer_from_reply(
     options = [option for option in (options or []) if option]
     displayed_options = [option for option in (displayed_options or []) if option]
     options_text = "\n".join(f"- {option}" for option in options) or "None"
-    displayed_options_text = (
-        "\n".join(f"- {option}" for option in displayed_options) or "None"
-    )
+    displayed_options_text = "\n".join(f"- {option}" for option in displayed_options) or "None"
     prompt = f"""Extract the user's answer for one job-application field.
 
 Question:
@@ -598,9 +613,7 @@ Rules:
         response = await llm.ainvoke(prompt)
         translated = extract_json_object(response.content)
         translated_question = str(translated.get("question") or "").strip()
-        translated_options = [
-            str(option).strip() for option in translated.get("options", [])
-        ]
+        translated_options = [str(option).strip() for option in translated.get("options", [])]
         if (
             translated_question
             and len(translated_options) == len(clean_options)
@@ -672,11 +685,7 @@ def is_required_field(
     label: str,
 ) -> bool:
     """Recognize native and accessible required-field markers."""
-    return (
-        required_attribute is not None
-        or (aria_required or "").lower() == "true"
-        or "*" in label
-    )
+    return required_attribute is not None or (aria_required or "").lower() == "true" or "*" in label
 
 
 def is_auto_skip_field(field_label: str) -> bool:
@@ -688,7 +697,7 @@ def is_auto_skip_field(field_label: str) -> bool:
 def get_auto_fill_value(field_label: str, profile: dict) -> str | None:
     """Get auto-fill value from profile for known fields."""
     label_lower = field_label.lower()
-    
+
     if "email" in label_lower:
         return profile.get("email")
     if "phone" in label_lower:
@@ -708,7 +717,7 @@ def get_auto_fill_value(field_label: str, profile: dict) -> str | None:
         return profile.get("form_defaults", {}).get("years_of_experience")
     if "education" in label_lower:
         return profile.get("form_defaults", {}).get("highest_education")
-    
+
     return None
 
 
@@ -874,30 +883,32 @@ async def execution_node(state: JobApplyState) -> dict:
     if not resume_path:
         return _failed_update(state, "Execution failed: resume_path is not set", form_qa_exchanges)
     if not os.path.exists(resume_path):
-        return _failed_update(state, f"Execution failed: resume file not found: {resume_path}", form_qa_exchanges)
+        return _failed_update(
+            state, f"Execution failed: resume file not found: {resume_path}", form_qa_exchanges
+        )
 
     telegram = TelegramClient()
 
     # Load profile for auto-fill
     import yaml
-    profile_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "data",
-        "profile.yaml"
-    )
+
+    profile_path = settings.resolve_data_path("profile.yaml")
     try:
         with open(profile_path, "r", encoding="utf-8") as f:
             profile = yaml.safe_load(f) or {}
     except Exception as e:
-        return _failed_update(state, f"Execution failed: profile load failed: {str(e)}", form_qa_exchanges)
+        return _failed_update(
+            state, f"Execution failed: profile load failed: {str(e)}", form_qa_exchanges
+        )
 
     application_submitted = False
-    
+    page = None
+
     try:
         async with trace(
             "easy_apply_execution",
             run_type="chain",
-            metadata=get_safe_job_metadata(current_job, include_description=False)
+            metadata=get_safe_job_metadata(current_job, include_description=False),
         ) as run_tree:
             async with managed_browser() as (browser, context):
                 page = await context.new_page()
@@ -907,25 +918,28 @@ async def execution_node(state: JobApplyState) -> dict:
                         state.get("qualification_result"),
                     )
                 )
-                
-                print(f"\n🚀 [LIVE] Starting application process for '{current_job['title']}' at '{current_job['company']}'")
+
+                print(
+                    f"\n🚀 [LIVE] Starting application process for '{current_job['title']}' at '{current_job['company']}'"
+                )
                 print(f"🔗 [LIVE] URL: {current_job['url']}")
-                
+
                 # Navigate to job
-                print(f"[LIVE] Navigating to job page...")
+                print("[LIVE] Navigating to job page...")
                 await page.goto(current_job["url"], wait_until="domcontentloaded")
                 await asyncio.sleep(get_randomized_delay())
-            
+
                 # Check for Easy Apply button
                 try:
                     await page.wait_for_selector(
-                        "button:has-text('Easy Apply'), button.jobs-apply-button",
-                        timeout=5000
+                        "button:has-text('Easy Apply'), button.jobs-apply-button", timeout=5000
                     )
-                except:
+                except Exception:
                     applied_evidence = await find_already_applied_indicator(page)
                     if applied_evidence:
-                        print("[LIVE] LinkedIn shows this job was already applied to. Skipping safely.")
+                        print(
+                            "[LIVE] LinkedIn shows this job was already applied to. Skipping safely."
+                        )
                         await page.close()
                         update = _skipped_update(
                             state,
@@ -956,7 +970,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             update["errors"] = errors
                         return update
 
-                    print(f"❌ [LIVE] No Easy Apply button or applied status found. Skipping.")
+                    print("❌ [LIVE] No Easy Apply button or applied status found. Skipping.")
                     await page.close()
                     return _skipped_update(
                         state,
@@ -964,14 +978,16 @@ async def execution_node(state: JobApplyState) -> dict:
                         "No Easy Apply button or explicit applied status found",
                         form_qa_exchanges,
                     )
-                
+
                 # Click Easy Apply
-                print(f"[LIVE] Clicking 'Easy Apply' button...")
-                await page.locator(
-                    "button:has-text('Easy Apply'), button.jobs-apply-button"
-                ).filter(visible=True).first.click()
+                print("[LIVE] Clicking 'Easy Apply' button...")
+                await (
+                    page.locator("button:has-text('Easy Apply'), button.jobs-apply-button")
+                    .filter(visible=True)
+                    .first.click()
+                )
                 await asyncio.sleep(get_randomized_delay())
-                
+
                 # Multiple selectors LinkedIn uses for the Easy Apply modal
                 MODAL_SELECTORS = [
                     "dialog",
@@ -982,27 +998,29 @@ async def execution_node(state: JobApplyState) -> dict:
                     "div.artdeco-modal__content",
                 ]
                 MODAL_CSS = ", ".join(MODAL_SELECTORS)
-                
+
                 # Process form steps
                 max_steps = 10  # safety limit
                 for step in range(max_steps):
                     print(f"\n📝 [LIVE] Processing Page {step + 1}...")
-                    
+
                     # Wait for modal (longer timeout on first page)
                     modal_timeout = 8000 if step == 0 else 5000
                     modal_found = False
                     try:
                         await page.wait_for_selector(MODAL_CSS, timeout=modal_timeout)
                         modal_found = True
-                    except:
+                    except Exception:
                         pass
-                    
+
                     if not modal_found:
                         # Debug: check if an "already applied" or success message appeared
                         try:
-                            body_text = await page.evaluate("() => document.body.innerText.substring(0, 2000)")
+                            body_text = await page.evaluate(
+                                "() => document.body.innerText.substring(0, 2000)"
+                            )
                             if "already applied" in body_text.lower():
-                                print(f"[LIVE] Already applied to this job previously.")
+                                print("[LIVE] Already applied to this job previously.")
                                 await page.close()
                                 return _skipped_update(
                                     state,
@@ -1010,8 +1028,11 @@ async def execution_node(state: JobApplyState) -> dict:
                                     "LinkedIn indicates this job was already applied to",
                                     form_qa_exchanges,
                                 )
-                            if "application submitted" in body_text.lower() or "application sent" in body_text.lower():
-                                print(f"✅ [LIVE] Application was submitted successfully!")
+                            if (
+                                "application submitted" in body_text.lower()
+                                or "application sent" in body_text.lower()
+                            ):
+                                print("✅ [LIVE] Application was submitted successfully!")
                                 application_submitted = True
                                 break
                             # Log visible modals/dialogs for debugging
@@ -1025,27 +1046,35 @@ async def execution_node(state: JobApplyState) -> dict:
                                 }));
                             }""")
                             if visible_modals:
-                                print(f"[LIVE] DEBUG: Found {len(visible_modals)} dialog(s) on page:")
+                                print(
+                                    f"[LIVE] DEBUG: Found {len(visible_modals)} dialog(s) on page:"
+                                )
                                 for m in visible_modals:
-                                    print(f"  -> <{m['tag']}> classes='{m['classes']}' visible={m['visible']} text='{m['text'][:60]}...'")
+                                    print(
+                                        f"  -> <{m['tag']}> classes='{m['classes']}' visible={m['visible']} text='{m['text'][:60]}...'"
+                                    )
                             else:
-                                print(f"[LIVE] DEBUG: No modal/dialog elements found on page.")
+                                print("[LIVE] DEBUG: No modal/dialog elements found on page.")
                                 print(f"[LIVE] DEBUG: Page snippet: {body_text[:200]}")
                         except Exception as dbg_err:
                             print(f"[LIVE] DEBUG: Could not inspect page: {dbg_err}")
-                        
-                        print(f"[LIVE] Form modal not found after {modal_timeout}ms. Ending form loop.")
+
+                        print(
+                            f"[LIVE] Form modal not found after {modal_timeout}ms. Ending form loop."
+                        )
                         break
-                    
+
                     # Get a reference to the modal element to scope queries
                     modal = await page.query_selector(MODAL_CSS)
                     if not modal:
                         modal = page  # Fallback to page if modal ref fails
-                    
+
                     # Check for external redirect or assessment
                     modal_text = await modal.inner_text()
                     if "external" in modal_text.lower() or "assessment" in modal_text.lower():
-                        print(f"⚠️ [LIVE] Form requires external redirect or assessment. Needs manual review.")
+                        print(
+                            "⚠️ [LIVE] Form requires external redirect or assessment. Needs manual review."
+                        )
                         await page.close()
                         return _manual_review_update(
                             state,
@@ -1058,9 +1087,7 @@ async def execution_node(state: JobApplyState) -> dict:
                     # groups. Answer these first so a later choice cannot prevent
                     # earlier fields from reaching Telegram.
                     early_text_fields = []
-                    for field in await modal.query_selector_all(
-                        STANDARD_TEXT_FIELD_SELECTOR
-                    ):
+                    for field in await modal.query_selector_all(STANDARD_TEXT_FIELD_SELECTOR):
                         if not await field.is_visible():
                             continue
                         try:
@@ -1080,9 +1107,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             continue
 
                         auto_value = (
-                            get_auto_fill_value(label, profile)
-                            if is_known_field(label)
-                            else None
+                            get_auto_fill_value(label, profile) if is_known_field(label) else None
                         )
                         if not auto_value:
                             print(f"[LIVE] Sending Telegram input question: '{label}'")
@@ -1092,11 +1117,13 @@ async def execution_node(state: JobApplyState) -> dict:
                                 telegram,
                                 settings,
                             )
-                            form_qa_exchanges.append({
-                                "question": label,
-                                "answer": answer,
-                                "timed_out": timed_out,
-                            })
+                            form_qa_exchanges.append(
+                                {
+                                    "question": label,
+                                    "answer": answer,
+                                    "timed_out": timed_out,
+                                }
+                            )
                             if timed_out:
                                 await page.close()
                                 return _skipped_update(
@@ -1112,7 +1139,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             print(f"[LIVE] Filling field: '{label}'")
                             await input_elem.fill(str(auto_value))
                             await asyncio.sleep(0.3)
-                    
+
                     # 1. Handle Fieldsets (Radio Button Groups)
                     fieldsets = await modal.query_selector_all("fieldset")
                     if fieldsets:
@@ -1120,20 +1147,19 @@ async def execution_node(state: JobApplyState) -> dict:
                     fieldset_questions = []
                     for fieldset in fieldsets:
                         legend_text = await _fieldset_question_text(fieldset, page)
-                        
+
                         # Skip if already answered
                         checked_radio = await fieldset.query_selector("input[type='radio']:checked")
                         if checked_radio:
                             continue
-                        
+
                         radios = await fieldset.query_selector_all("input[type='radio']")
                         if not radios:
                             continue
-                            
+
                         # Extract option labels
                         option_labels = [
-                            await get_radio_option_label(radio, fieldset)
-                            for radio in radios
+                            await get_radio_option_label(radio, fieldset) for radio in radios
                         ]
                         option_labels = [label for label in option_labels if label]
                         if option_labels:
@@ -1150,7 +1176,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             )
                             if matched is not None:
                                 selected_label = option_labels[matched]
-                         
+
                         if not selected_label:
                             # Ask user via Telegram
                             prompt_question = legend_text
@@ -1162,15 +1188,17 @@ async def execution_node(state: JobApplyState) -> dict:
                                 settings,
                                 options=option_labels,
                             )
-                            
-                            form_qa_exchanges.append({
-                                "question": prompt_question,
-                                "answer": answer,
-                                "timed_out": timed_out,
-                            })
-                            
+
+                            form_qa_exchanges.append(
+                                {
+                                    "question": prompt_question,
+                                    "answer": answer,
+                                    "timed_out": timed_out,
+                                }
+                            )
+
                             if timed_out:
-                                print(f"❌ [LIVE] Q&A timed out. Skipping job.")
+                                print("❌ [LIVE] Q&A timed out. Skipping job.")
                                 await page.close()
                                 return _skipped_update(
                                     state,
@@ -1179,11 +1207,12 @@ async def execution_node(state: JobApplyState) -> dict:
                                     form_qa_exchanges,
                                     {"timeout_field": legend_text},
                                 )
-                            
-                            matched = match_choice_index(
-                                answer,
-                                option_labels,
-                            )
+
+                            if answer is not None:
+                                matched = match_choice_index(
+                                    answer,
+                                    option_labels,
+                                )
                             if matched is not None:
                                 selected_label = option_labels[matched]
 
@@ -1196,7 +1225,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 form_qa_exchanges,
                                 {"choice_field": legend_text},
                             )
-                                    
+
                         print(f"[LIVE] Selecting radio: '{legend_text}' -> '{selected_label}'")
                         selection_method = await select_live_radio_option(
                             page,
@@ -1243,11 +1272,13 @@ async def execution_node(state: JobApplyState) -> dict:
                             settings,
                             options=labels,
                         )
-                        form_qa_exchanges.append({
-                            "question": question,
-                            "answer": answer,
-                            "timed_out": timed_out,
-                        })
+                        form_qa_exchanges.append(
+                            {
+                                "question": question,
+                                "answer": answer,
+                                "timed_out": timed_out,
+                            }
+                        )
                         if timed_out:
                             await page.close()
                             return _skipped_update(
@@ -1257,7 +1288,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 form_qa_exchanges,
                                 {"timeout_field": question},
                             )
-                        matched = match_choice_index(answer, labels)
+                        matched = match_choice_index(answer, labels) if answer is not None else None
                         if matched is None:
                             await page.close()
                             return _manual_review_update(
@@ -1328,11 +1359,13 @@ async def execution_node(state: JobApplyState) -> dict:
                             settings,
                             options=labels,
                         )
-                        form_qa_exchanges.append({
-                            "question": question,
-                            "answer": answer,
-                            "timed_out": timed_out,
-                        })
+                        form_qa_exchanges.append(
+                            {
+                                "question": question,
+                                "answer": answer,
+                                "timed_out": timed_out,
+                            }
+                        )
                         if timed_out:
                             await page.close()
                             return _skipped_update(
@@ -1342,7 +1375,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 form_qa_exchanges,
                                 {"timeout_field": question},
                             )
-                        matched = match_choice_index(answer, labels)
+                        matched = match_choice_index(answer, labels) if answer is not None else None
                         if matched is None:
                             await page.close()
                             return _manual_review_update(
@@ -1355,7 +1388,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         print(f"[LIVE] Selecting dropdown: '{question}' -> '{labels[matched]}'")
                         await option_pairs[matched][0].click()
                         await asyncio.sleep(0.3)
-                    
+
                     # 2. Handle Text, Textarea, and Select elements
                     inputs = await modal.query_selector_all(
                         "input[type='text'], input[type='tel'], input[type='email'], input[type='number'], textarea, select"
@@ -1366,7 +1399,9 @@ async def execution_node(state: JobApplyState) -> dict:
                         val = await inp.input_value()
                         if not val:
                             empty_count += 1
-                    print(f"[LIVE] Found {len(inputs)} standard fields on this page ({empty_count} empty).")
+                    print(
+                        f"[LIVE] Found {len(inputs)} standard fields on this page ({empty_count} empty)."
+                    )
                     for input_elem in inputs:
                         value = await input_elem.input_value()
                         tag_name = await input_elem.evaluate("el => el.tagName.toLowerCase()")
@@ -1378,18 +1413,18 @@ async def execution_node(state: JobApplyState) -> dict:
                                 continue
                         elif value:
                             continue
-                        
+
                         label = await get_form_field_label(input_elem, page)
-                        
+
                         if is_auto_skip_field(label):
                             continue
-                        
+
                         print(f"[LIVE] Field: '{label}' (type: {tag_name})")
-                        
+
                         auto_value = None
                         if is_known_field(label):
                             auto_value = get_auto_fill_value(label, profile)
-                        
+
                         # Process dropdown (select) vs inputs
                         if tag_name == "select":
                             options = await input_elem.query_selector_all("option")
@@ -1404,7 +1439,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 for val, txt in option_values
                                 if txt and not choice_is_unanswered(val, txt)
                             ]
-                            
+
                             val_to_select = None
                             if auto_value:
                                 matched = match_choice_index(
@@ -1418,7 +1453,9 @@ async def execution_node(state: JobApplyState) -> dict:
                             if not val_to_select:
                                 option_labels = [txt for _, txt in selectable_options]
                                 prompt_question = label
-                                print(f"[LIVE] Sending Telegram dropdown question: '{prompt_question}'")
+                                print(
+                                    f"[LIVE] Sending Telegram dropdown question: '{prompt_question}'"
+                                )
                                 answer, timed_out = await ask_user_for_question(
                                     prompt_question,
                                     current_job,
@@ -1426,13 +1463,15 @@ async def execution_node(state: JobApplyState) -> dict:
                                     settings,
                                     options=option_labels,
                                 )
-                                form_qa_exchanges.append({
-                                    "question": prompt_question,
-                                    "answer": answer,
-                                    "timed_out": timed_out,
-                                })
+                                form_qa_exchanges.append(
+                                    {
+                                        "question": prompt_question,
+                                        "answer": answer,
+                                        "timed_out": timed_out,
+                                    }
+                                )
                                 if timed_out:
-                                    print(f"❌ [LIVE] Q&A timed out. Skipping job.")
+                                    print("❌ [LIVE] Q&A timed out. Skipping job.")
                                     await page.close()
                                     return _skipped_update(
                                         state,
@@ -1441,7 +1480,11 @@ async def execution_node(state: JobApplyState) -> dict:
                                         form_qa_exchanges,
                                         {"timeout_field": label},
                                     )
-                                matched = match_choice_index(answer, option_labels)
+                                matched = (
+                                    match_choice_index(answer, option_labels)
+                                    if answer is not None
+                                    else None
+                                )
                                 if matched is not None:
                                     val, txt = selectable_options[matched]
                                     val_to_select = val or txt
@@ -1455,13 +1498,13 @@ async def execution_node(state: JobApplyState) -> dict:
                                     form_qa_exchanges,
                                     {"choice_field": label},
                                 )
-                            
+
                             print(f"[LIVE] Selecting dropdown: '{label}' -> '{val_to_select}'")
                             await input_elem.select_option(value=val_to_select)
                             await asyncio.sleep(0.3)
                         else:
                             # Text input/textarea
-                            required = is_required_field(
+                            _required = is_required_field(
                                 await input_elem.get_attribute("required"),
                                 await input_elem.get_attribute("aria-required"),
                                 label,
@@ -1469,18 +1512,17 @@ async def execution_node(state: JobApplyState) -> dict:
                             if not auto_value:
                                 print(f"[LIVE] Sending Telegram input question: '{label}'")
                                 answer, timed_out = await ask_user_for_question(
-                                    label,
-                                    current_job,
-                                    telegram,
-                                    settings
+                                    label, current_job, telegram, settings
                                 )
-                                form_qa_exchanges.append({
-                                    "question": label,
-                                    "answer": answer,
-                                    "timed_out": timed_out,
-                                })
+                                form_qa_exchanges.append(
+                                    {
+                                        "question": label,
+                                        "answer": answer,
+                                        "timed_out": timed_out,
+                                    }
+                                )
                                 if timed_out:
-                                    print(f"❌ [LIVE] Q&A timed out. Skipping job.")
+                                    print("❌ [LIVE] Q&A timed out. Skipping job.")
                                     await page.close()
                                     return _skipped_update(
                                         state,
@@ -1490,20 +1532,24 @@ async def execution_node(state: JobApplyState) -> dict:
                                         {"timeout_field": label},
                                     )
                                 auto_value = answer
-                            
+
                             if auto_value:
-                                source = "Auto-filling" if is_known_field(label) and get_auto_fill_value(label, profile) else "User answer"
+                                source = (
+                                    "Auto-filling"
+                                    if is_known_field(label) and get_auto_fill_value(label, profile)
+                                    else "User answer"
+                                )
                                 print(f"[LIVE]   -> {source} '{label}' with: '{auto_value}'")
                                 await input_elem.fill(auto_value)
                                 await asyncio.sleep(0.3)
-                    
+
                     # 3. Handle Checkboxes
                     checkboxes = await modal.query_selector_all("input[type='checkbox']")
                     for cb in checkboxes:
                         is_checked = await cb.is_checked()
                         if is_checked:
                             continue
-                        
+
                         cb_id = await cb.get_attribute("id")
                         cb_label = ""
                         if cb_id:
@@ -1512,11 +1558,15 @@ async def execution_node(state: JobApplyState) -> dict:
                                 cb_label = (await label_elem.inner_text()).strip()
                         if not cb_label:
                             try:
-                                cb_label = (await cb.evaluate("el => el.parentElement.innerText")).strip()
-                            except:
+                                cb_label = (
+                                    await cb.evaluate("el => el.parentElement.innerText")
+                                ).strip()
+                            except Exception:
                                 pass
-                        
-                        if any(k in cb_label.lower() for k in ["agree", "terms", "privacy", "consent"]):
+
+                        if any(
+                            k in cb_label.lower() for k in ["agree", "terms", "privacy", "consent"]
+                        ):
                             if settings.auto_accept_application_terms:
                                 consent_granted = True
                             else:
@@ -1527,11 +1577,13 @@ async def execution_node(state: JobApplyState) -> dict:
                                     settings,
                                     options=["Yes", "No"],
                                 )
-                                form_qa_exchanges.append({
-                                    "question": cb_label,
-                                    "answer": answer,
-                                    "timed_out": timed_out,
-                                })
+                                form_qa_exchanges.append(
+                                    {
+                                        "question": cb_label,
+                                        "answer": answer,
+                                        "timed_out": timed_out,
+                                    }
+                                )
                                 if timed_out:
                                     await page.close()
                                     return _skipped_update(
@@ -1540,9 +1592,17 @@ async def execution_node(state: JobApplyState) -> dict:
                                         f"Consent confirmation timed out: {cb_label}",
                                         form_qa_exchanges,
                                     )
-                                consent_granted = answer.strip().lower() in {
-                                    "yes", "y", "agree", "accept", "approved"
-                                }
+                                consent_granted = bool(
+                                    answer
+                                    and answer.strip().lower()
+                                    in {
+                                        "yes",
+                                        "y",
+                                        "agree",
+                                        "accept",
+                                        "approved",
+                                    }
+                                )
                             if not consent_granted:
                                 await page.close()
                                 return _skipped_update(
@@ -1551,7 +1611,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                     f"Application agreement was not accepted: {cb_label}",
                                     form_qa_exchanges,
                                 )
-                            print(f"[LIVE] Checking approved agreement checkbox: '{cb_label[:40]}...'")
+                            print(
+                                f"[LIVE] Checking approved agreement checkbox: '{cb_label[:40]}...'"
+                            )
                             await cb.check()
                             await asyncio.sleep(0.3)
                         else:
@@ -1568,11 +1630,13 @@ async def execution_node(state: JobApplyState) -> dict:
                                     settings,
                                     options=["Yes", "No"],
                                 )
-                                form_qa_exchanges.append({
-                                    "question": cb_label,
-                                    "answer": answer,
-                                    "timed_out": timed_out,
-                                })
+                                form_qa_exchanges.append(
+                                    {
+                                        "question": cb_label,
+                                        "answer": answer,
+                                        "timed_out": timed_out,
+                                    }
+                                )
                                 if timed_out:
                                     await page.close()
                                     return _skipped_update(
@@ -1582,7 +1646,13 @@ async def execution_node(state: JobApplyState) -> dict:
                                         form_qa_exchanges,
                                         {"timeout_field": cb_label},
                                     )
-                                if answer.strip().lower() in {"yes", "y", "true", "check", "selected"}:
+                                if answer and answer.strip().lower() in {
+                                    "yes",
+                                    "y",
+                                    "true",
+                                    "check",
+                                    "selected",
+                                }:
                                     await cb.check()
                                     await asyncio.sleep(0.3)
                                 elif required_choice:
@@ -1594,24 +1664,29 @@ async def execution_node(state: JobApplyState) -> dict:
                                         form_qa_exchanges,
                                         {"choice_field": cb_label},
                                     )
-                    
+
                     # 4. Handle Resume/File upload
                     file_inputs = await modal.query_selector_all("input[type='file']")
+                    resume_path = state.get("resume_path")
                     for file_input in file_inputs:
-                        if state.get("resume_path") and os.path.exists(state["resume_path"]):
-                            print(f"[LIVE] Uploading resume file: '{os.path.basename(state['resume_path'])}'")
-                            await file_input.set_input_files(state["resume_path"])
+                        if resume_path and os.path.exists(resume_path):
+                            print(
+                                f"[LIVE] Uploading resume file: '{os.path.basename(resume_path)}'"
+                            )
+                            await file_input.set_input_files(resume_path)
                             await asyncio.sleep(1)
-                    
+
                     # Advance to the next step or submit. LinkedIn uses several
                     # labels for the same action and may expose only an aria-label.
                     next_btn, navigation_action, btn_text = await find_navigation_button(modal)
-                    
+
                     if next_btn:
                         if navigation_action == "submit":
                             # Final submit
                             if state["dry_run"]:
-                                print(f"[LIVE] Dry run mode - reached review/submit step. Closing modal without submitting.")
+                                print(
+                                    "[LIVE] Dry run mode - reached review/submit step. Closing modal without submitting."
+                                )
                                 await page.close()
                                 update = _applied_update(state, "dry_run", form_qa_exchanges)
                                 try:
@@ -1632,9 +1707,11 @@ async def execution_node(state: JobApplyState) -> dict:
                                     update["application_outcomes"][-1],
                                 )
                                 if receipt_error:
-                                    update["errors"] = list(update.get("errors") or state.get("errors") or []) + [receipt_error]
+                                    update["errors"] = list(
+                                        update.get("errors") or state.get("errors") or []
+                                    ) + [receipt_error]
                                 return update
-                            
+
                             if not await next_btn.is_enabled():
                                 await page.close()
                                 return _manual_review_update(
@@ -1654,7 +1731,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     form_qa_exchanges,
                                 )
 
-                            print(f"🚀 [LIVE] CLICKING SUBMIT - SUBMITTING APPLICATION!")
+                            print("🚀 [LIVE] CLICKING SUBMIT - SUBMITTING APPLICATION!")
                             await next_btn.click()
                             if not await wait_for_submission_confirmation(page):
                                 await page.close()
@@ -1686,23 +1763,27 @@ async def execution_node(state: JobApplyState) -> dict:
                             f"Visible buttons: {label_text}",
                             form_qa_exchanges,
                         )
-                
+
                 # Clean close outside form steps loop
-                print(f"[LIVE] Closing job details page.")
+                print("[LIVE] Closing job details page.")
                 await page.close()
-                
+
                 # Update trace with execution results
                 if run_tree:
-                    run_tree.metadata.update(get_execution_metadata(
-                        dry_run=state["dry_run"],
-                        status="submitted" if application_submitted else "completed",
-                        qa_count=len(form_qa_exchanges),
-                        form_steps=0,
-                        timed_out=False
-                    ))
-        
+                    run_tree.metadata.update(
+                        get_execution_metadata(
+                            dry_run=state["dry_run"],
+                            status="submitted" if application_submitted else "completed",
+                            qa_count=len(form_qa_exchanges),
+                            form_steps=0,
+                            timed_out=False,
+                        )
+                    )
+
         if application_submitted:
-            print(f"✅ [LIVE] Successfully submitted application for {current_job['title']} at {current_job['company']}!")
+            print(
+                f"✅ [LIVE] Successfully submitted application for {current_job['title']} at {current_job['company']}!"
+            )
             # Update MongoDB with submission status
             errors = list(state.get("errors") or [])
             try:
@@ -1714,10 +1795,12 @@ async def execution_node(state: JobApplyState) -> dict:
                         "applied_at": datetime.now(timezone.utc),
                         "qa_count": len(form_qa_exchanges),
                         "resume_edited": resume_was_edited(state),
-                    }
+                    },
                 )
             except Exception as e:
-                errors.append(f"Application submitted but MongoDB update failed for {current_job['title']}: {str(e)}")
+                errors.append(
+                    f"Application submitted but MongoDB update failed for {current_job['title']}: {str(e)}"
+                )
 
             update = _applied_update(state, "submitted", form_qa_exchanges)
             receipt_error = await send_application_receipt(
@@ -1729,19 +1812,21 @@ async def execution_node(state: JobApplyState) -> dict:
             update["errors"] = errors
             return update
         else:
-            print(f"❌ [LIVE] Application incomplete or failed.")
+            print("❌ [LIVE] Application incomplete or failed.")
             return _failed_update(state, "Could not complete application flow", form_qa_exchanges)
-            
+
     except UserSkippedJob as exc:
         print(f"[LIVE] User skipped this job from Telegram while answering: '{exc.question}'")
-        form_qa_exchanges.append({
-            "question": exc.question,
-            "answer": "/skip",
-            "timed_out": False,
-            "skipped": True,
-        })
+        form_qa_exchanges.append(
+            {
+                "question": exc.question,
+                "answer": "/skip",
+                "timed_out": False,
+                "skipped": True,
+            }
+        )
         try:
-            if 'page' in locals() and not page.is_closed():
+            if page is not None and not page.is_closed():
                 await page.close()
         except Exception:
             pass
@@ -1762,8 +1847,10 @@ async def execution_node(state: JobApplyState) -> dict:
         error_msg = f"Execution error for {current_job['title']}: {str(e)}"
         print(f"❌ [LIVE] Execution Error: {str(e)}")
         try:
-            if 'page' in locals() and not page.is_closed():
-                await take_error_screenshot(page, state["run_id"], f"exec_error_{current_job['job_id']}")
+            if page is not None and not page.is_closed():
+                await take_error_screenshot(
+                    page, state.get("run_id", ""), f"exec_error_{current_job.get('job_id', '')}"
+                )
         except Exception as screenshot_err:
             print(f"Failed to take error screenshot: {screenshot_err}")
         return _failed_update(state, error_msg, form_qa_exchanges)

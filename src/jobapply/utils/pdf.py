@@ -19,7 +19,7 @@ async def markdown_to_pdf(md_content: str, output_path: str) -> str:
     """
     # Convert markdown to HTML
     html = markdown.markdown(md_content, extensions=["tables", "fenced_code"])
-    
+
     # Add ATS-friendly styling
     styled_html = f"""
     <html><head><style>
@@ -56,17 +56,13 @@ async def markdown_to_pdf(md_content: str, output_path: str) -> str:
         }}
     </style></head><body>{html}</body></html>
     """
-    
+
     # Generate PDF using Playwright
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.set_content(styled_html)
-        await page.pdf(
-            path=output_path, 
-            format="Letter",
-            print_background=False
-        )
+        await page.pdf(path=output_path, format="Letter", print_background=False)
         await browser.close()
-    
+
     return output_path

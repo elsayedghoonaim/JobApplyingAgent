@@ -1,13 +1,15 @@
 """Browser automation utilities with Playwright CDP."""
 
+import asyncio
 import os
 import random
 import subprocess
-import asyncio
-from pathlib import Path
 from contextlib import asynccontextmanager
-from playwright.async_api import async_playwright, Browser, BrowserContext
+from pathlib import Path
+
 from langsmith.run_helpers import trace
+from playwright.async_api import async_playwright
+
 from jobapply.settings import get_settings
 from jobapply.utils.tracing import get_browser_metadata
 
@@ -18,7 +20,9 @@ def edge_debug_ports(preferred_port: int, active_port_path: Path | None = None) 
     if active_port_path is None:
         local_app_data = os.getenv("LOCALAPPDATA")
         if local_app_data:
-            active_port_path = Path(local_app_data) / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort"
+            active_port_path = (
+                Path(local_app_data) / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort"
+            )
     if active_port_path and active_port_path.is_file():
         try:
             discovered = int(active_port_path.read_text(encoding="utf-8").splitlines()[0])
@@ -100,13 +104,11 @@ async def managed_browser():
     settings = get_settings()
     pw = await async_playwright().start()
     browser = None
-    
+
     try:
         # Trace CDP connection attempt
         async with trace(
-            "edge_cdp_connect",
-            run_type="tool",
-            metadata={"cdp_port": settings.edge_debug_port}
+            "edge_cdp_connect", run_type="tool", metadata={"cdp_port": settings.edge_debug_port}
         ) as run_tree:
             try:
                 browser, connected_port, last_error = await connect_to_edge(
@@ -131,7 +133,7 @@ async def managed_browser():
                         f"Last connection error: {last_error}"
                     )
                 contexts = browser.contexts
-                
+
                 if not contexts:
                     error_msg = (
                         "No browser contexts found. Ensure Edge has at least "
@@ -140,33 +142,33 @@ async def managed_browser():
                     )
                     # Update trace with error metadata
                     if run_tree:
-                        run_tree.metadata.update(get_browser_metadata(
-                            port=connected_port,
-                            connected=False,
-                            error=error_msg
-                        ))
+                        run_tree.metadata.update(
+                            get_browser_metadata(
+                                port=connected_port, connected=False, error=error_msg
+                            )
+                        )
                     raise RuntimeError(error_msg)
-                
+
                 context = contexts[0]
-                
+
                 # Update trace with success metadata
                 if run_tree:
-                    run_tree.metadata.update(get_browser_metadata(
-                        port=connected_port,
-                        connected=True,
-                        contexts_count=len(contexts)
-                    ))
-                
+                    run_tree.metadata.update(
+                        get_browser_metadata(
+                            port=connected_port, connected=True, contexts_count=len(contexts)
+                        )
+                    )
+
                 yield browser, context
-                
+
             except Exception as e:
                 # Update trace with error metadata
                 if run_tree:
-                    run_tree.metadata.update(get_browser_metadata(
-                        port=settings.edge_debug_port,
-                        connected=False,
-                        error=str(e)
-                    ))
+                    run_tree.metadata.update(
+                        get_browser_metadata(
+                            port=settings.edge_debug_port, connected=False, error=str(e)
+                        )
+                    )
                 raise
     finally:
         if browser:

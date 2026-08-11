@@ -55,25 +55,19 @@ def format_session_summary(state: JobApplyState) -> str:
         lines.extend(["", "SKIPPED"])
         for index, outcome in enumerate(skipped[:10], 1):
             reason = outcome.get("reason") or outcome.get("error") or "Unspecified"
-            lines.append(
-                f"{index}. {outcome.get('title', 'Unknown title')} — {reason}"
-            )
+            lines.append(f"{index}. {outcome.get('title', 'Unknown title')} — {reason}")
 
     if manual:
         lines.extend(["", "NEEDS MANUAL REVIEW"])
         for index, outcome in enumerate(manual[:10], 1):
             reason = outcome.get("reason") or outcome.get("error") or "Incomplete form"
-            lines.append(
-                f"{index}. {outcome.get('title', 'Unknown title')} — {reason}"
-            )
+            lines.append(f"{index}. {outcome.get('title', 'Unknown title')} — {reason}")
 
     if failed:
         lines.extend(["", "FAILED"])
         for index, outcome in enumerate(failed[:10], 1):
             error = str(outcome.get("error") or "Unknown error")
-            lines.append(
-                f"{index}. {outcome.get('title', 'Unknown title')} — {error[:120]}"
-            )
+            lines.append(f"{index}. {outcome.get('title', 'Unknown title')} — {error[:120]}")
 
     queries = list(state.get("search_queries") or [])
     if queries:
@@ -81,10 +75,12 @@ def format_session_summary(state: JobApplyState) -> str:
         lines.extend(["", f"Search queries reached: {completed}/{len(queries)}"])
 
     if dry_runs:
-        lines.extend([
-            "",
-            "Important: Dry-run entries are preparation checks, not submitted applications.",
-        ])
+        lines.extend(
+            [
+                "",
+                "Important: Dry-run entries are preparation checks, not submitted applications.",
+            ]
+        )
 
     message = "\n".join(lines)
     return message if len(message) <= 4000 else message[:3997] + "..."

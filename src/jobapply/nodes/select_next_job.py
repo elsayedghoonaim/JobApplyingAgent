@@ -26,7 +26,7 @@ async def select_next_job_node(state: JobApplyState) -> dict:
     for i in range(state["current_job_index"], len(listings)):
         job = listings[i]
         job_id = job.get("job_id")
-        
+
         if job_id not in seen:
             print(f"👉 Processing job: {job.get('title')} at {job.get('company')}")
             return {
@@ -34,7 +34,9 @@ async def select_next_job_node(state: JobApplyState) -> dict:
                 "current_job": job,
             }
         else:
-            print(f"⏭️  Skipping already-seen job {job_id}: {job.get('title')} at {job.get('company')}")
+            print(
+                f"⏭️  Skipping already-seen job {job_id}: {job.get('title')} at {job.get('company')}"
+            )
 
     # No unseen jobs remain — router will decide next action
     return {"current_job": None}

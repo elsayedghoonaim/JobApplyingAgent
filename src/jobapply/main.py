@@ -1,17 +1,19 @@
 """Main entry point for jobapply CLI."""
 
-import asyncio
 import argparse
-from uuid import uuid4
+import asyncio
 from datetime import datetime
 from typing import Optional
+from uuid import uuid4
+
 from langchain_core.tracers.context import tracing_v2_enabled
-from jobapply.settings import get_settings
+
 from jobapply.graph import compile_graph, make_graph_config
+from jobapply.settings import get_settings
 from jobapply.utils.dedup import DeduplicationStore
-from jobapply.utils.monitoring import setup_logging, ProgressTracker
-from jobapply.utils.tracing import get_session_metadata
 from jobapply.utils.llm import close_llm_client
+from jobapply.utils.monitoring import ProgressTracker, setup_logging
+from jobapply.utils.tracing import get_session_metadata
 
 
 def resolve_graph_input(resume_requested, snapshot, initial_state):
@@ -104,21 +106,21 @@ async def run(
     # Compile graph
     logger.info("🔧 Compiling graph...")
     graph = compile_graph()
-    
+
     # Prepare session metadata for tracing
     session_metadata = get_session_metadata(
         run_id=run_id,
         dry_run=initial_state["dry_run"],
         max_applications=initial_state["max_applications"],
         queries_count=len(initial_state["search_queries"]),
-        edge_port=settings.edge_debug_port
+        edge_port=settings.edge_debug_port,
     )
-    
+
     # Prepare config with tracing metadata and tags
     config = make_graph_config(
         run_id=run_id,
         tags=["jobapply", "dry-run" if initial_state["dry_run"] else "live", f"run:{run_id}"],
-        metadata=session_metadata
+        metadata=session_metadata,
     )
 
     # Create progress tracker
@@ -151,42 +153,43 @@ async def run(
                 if saved_result is not None
                 else await graph.ainvoke(graph_input, config)
             )
-            
+
             # Get and log LangSmith trace URL
             try:
                 trace_url = tracer.get_run_url()
                 logger.info(f"🔗 LangSmith trace: {trace_url}")
             except Exception:
                 pass  # Ignore if we can't get the URL
-            
-            logger.info(f"\n✅ Execution complete!")
-            
+
+            logger.info("\n✅ Execution complete!")
+
             # Get accurate counts from the final state of the graph
             jobs_processed = result.get("jobs_evaluated_count", 0)
             qualified_count = result.get("qualified_jobs_count", 0)
             not_qualified_count = result.get("not_qualified_jobs_count", 0)
             submitted_count = result.get("applications_count", 0)
             dry_run_count = sum(
-                1 for outcome in result.get("application_outcomes", [])
+                1
+                for outcome in result.get("application_outcomes", [])
                 if outcome.get("status") == "dry_run"
             )
-            
+
             # Calculate duration
             duration_seconds = (datetime.now() - tracker.start_time).total_seconds()
             hours = int(duration_seconds // 3600)
             minutes = int((duration_seconds % 3600) // 60)
-            
+
             # Print summary
-            logger.info("\n" + "="*60)
+            logger.info("\n" + "=" * 60)
             logger.info("📊 SESSION SUMMARY")
-            logger.info("="*60)
+            logger.info("=" * 60)
             logger.info(f"⏱️  Duration: {hours}h {minutes}m")
             logger.info(f"🔍 Jobs Evaluated: {jobs_processed}")
             logger.info(f"✅ Qualified: {qualified_count}")
             logger.info(f"❌ Not Qualified: {not_qualified_count}")
             logger.info(f"📤 Applications Submitted: {submitted_count}")
             logger.info(f"🧪 Dry Run Ready: {dry_run_count}")
-            logger.info("="*60)
+            logger.info("=" * 60)
     except KeyboardInterrupt:
         logger.warning("\n⚠️  Interrupted by user. State saved to checkpoint.")
         logger.info(f"   Resume with: jobapply --run-id {run_id}")
@@ -201,6 +204,7 @@ async def run(
 
 def main():
     """CLI entry point."""
+
     def non_negative_int(value: str) -> int:
         parsed = int(value)
         if parsed < 0:

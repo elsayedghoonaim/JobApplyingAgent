@@ -1,11 +1,12 @@
 """Settings module for jobapply using Pydantic Settings."""
 
+import os
 from functools import lru_cache
 from typing import Literal
 
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
 
 # Load .env file explicitly
 load_dotenv()
@@ -21,8 +22,19 @@ class Settings(BaseSettings):
         extra="ignore",  # Ignore extra fields in .env
     )
 
+    # User Data
+    data_dir: str = "user-data"
+
+    def resolve_data_path(self, *parts: str) -> str:
+        """Resolve a path under the configured data directory safely working from any CWD."""
+        path = self.data_dir
+        if not os.path.isabs(path):
+            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            path = os.path.join(repo_root, path)
+        return os.path.abspath(os.path.join(path, *parts))
+
     # MongoDB
-    mongodb_url: str
+    mongodb_url: str = Field(default="mongodb://localhost:27017")
     mongodb_db: str = "jobapply"
 
     # Single LLM provider: Gemma through the native Google generateContent API.
@@ -30,8 +42,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
 
     # Telegram
-    telegram_bot_token: str
-    telegram_chat_id: str
+    telegram_bot_token: str = Field(default="")
+    telegram_chat_id: str = Field(default="")
     telegram_bot_name: str = "Magdy"
     telegram_user_title: str = "Boss"
     telegram_question_language: str = "English"
