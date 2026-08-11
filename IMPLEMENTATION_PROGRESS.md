@@ -2,7 +2,7 @@
 
 | Task | Status | Commit |
 | --- | --- | --- |
-| 0. Safe repository baseline | Reviewed + committed | `e7cc10e` |
+| 0. Safe repository baseline | Reviewed + committed | `2c837dc` |
 | 1. Privacy, packaging, dependency lock, and CI baseline | At implementer | — |
 | 2. Paths, redaction, PDF hardening, and Edge isolation | Queued | — |
 | 3. Account-safety pause behavior | Queued | — |
