@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 from jobapply.settings import get_settings
+from jobapply.utils.redaction import redact_string
 
 
 @dataclass
@@ -92,13 +93,25 @@ class GemmaChat:
             payload["generationConfig"]["responseMimeType"] = self.response_mime_type
         if self.response_json_schema:
             payload["generationConfig"]["responseJsonSchema"] = self.response_json_schema
+        headers = {"x-goog-api-key": self.api_key}
         client = _get_http_client()
         for attempt in range(3):
-            response = await client.post(url, params={"key": self.api_key}, json=payload)
-            if response.status_code not in (429, 503) or attempt == 2:
-                response.raise_for_status()
-                return LLMResponse(content=_extract_text(response.json()))
-            await asyncio.sleep(_retry_delay(response, attempt))
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code not in (429, 503) or attempt == 2:
+                    response.raise_for_status()
+                    return LLMResponse(content=_extract_text(response.json()))
+                await asyncio.sleep(_retry_delay(response, attempt))
+            except httpx.HTTPStatusError as exc:
+                msg = redact_string(str(exc), extra_secrets=[self.api_key])
+                raise RuntimeError(f"Gemma API HTTP error: {msg}") from None
+            except Exception as exc:
+                if attempt == 2 or not isinstance(
+                    exc, (httpx.TransportError, httpx.TimeoutException)
+                ):
+                    msg = redact_string(str(exc), extra_secrets=[self.api_key])
+                    raise RuntimeError(f"Gemma API request failed: {msg}") from None
+                await asyncio.sleep(min(2.0**attempt, 8.0))
         raise AssertionError("unreachable")
 
 

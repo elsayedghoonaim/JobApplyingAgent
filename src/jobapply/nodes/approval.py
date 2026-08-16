@@ -7,8 +7,10 @@ from uuid import uuid4
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.llm import get_llm
+from jobapply.utils.paths import get_edited_resume_path
 from jobapply.utils.pdf import markdown_to_pdf
 from jobapply.utils.prompts import get_resume_edit_prompt
+from jobapply.utils.redaction import redact_string
 from jobapply.utils.telegram import TelegramClient
 
 
@@ -111,16 +113,14 @@ Reply with `{nonce}` followed by:
                 resume_markdown = f.read()
         except Exception as e:
             updates["errors"] = list(state.get("errors") or []) + [
-                f"Failed to load resume.md for editing: {str(e)}"
+                f"Failed to load resume.md for editing: {redact_string(str(e))}"
             ]
 
         proposed_edits = state.get("proposed_edits")
         if resume_markdown and proposed_edits:
-            run_id = state.get("run_id", "")
-            output_dir = os.path.join("outputs", run_id)
-            os.makedirs(output_dir, exist_ok=True)
-            job_id = current_job.get("job_id", "")
-            edited_pdf_path = os.path.join(output_dir, f"edited_resume_{job_id}.pdf")
+            run_id = state.get("run_id", "default_run")
+            job_id = str(current_job.get("job_id", "unknown"))
+            edited_pdf_path = str(get_edited_resume_path(run_id=run_id, job_id=job_id))
 
             try:
                 llm = get_llm(temperature=0.2, max_output_tokens=2048)
@@ -138,7 +138,7 @@ Reply with `{nonce}` followed by:
                     raise RuntimeError("PDF file was not created on disk")
             except Exception as e:
                 updates["errors"] = list(state.get("errors") or []) + [
-                    f"Resume editing/PDF generation failed for {current_job['title']}: {str(e)}"
+                    f"Resume editing/PDF generation failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
                 ]
                 updates["resume_edited"] = False
         else:

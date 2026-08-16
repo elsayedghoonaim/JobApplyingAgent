@@ -623,10 +623,10 @@ def test_session_summary_is_plain_and_structured():
     assert "**" not in message
 
 
-def test_edge_dynamic_debug_port_discovery(tmp_path):
+def test_edge_dynamic_debug_port_discovery_ignored(tmp_path):
     marker = tmp_path / "DevToolsActivePort"
     marker.write_text("43123\n/devtools/browser/test", encoding="utf-8")
-    assert edge_debug_ports(9222, marker) == [43123, 9222]
+    assert edge_debug_ports(9222, marker) == [9222]
 
 
 def test_edge_automation_profile_is_resolved_outside_normal_profile(tmp_path, monkeypatch):
@@ -881,9 +881,10 @@ async def test_notification_stage_in_isolation(mock_telegram_class):
 @pytest.mark.asyncio
 async def test_telegram_http_failure_is_not_silent():
     response = MagicMock()
+    fake_token = "123456789:AAFakeTelegramTokenSecretXYZ"
     response.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "bad request",
-        request=httpx.Request("POST", "https://api.telegram.org"),
+        f"400 Client Error for https://api.telegram.org/bot{fake_token}/sendMessage",
+        request=httpx.Request("POST", f"https://api.telegram.org/bot{fake_token}/sendMessage"),
         response=httpx.Response(400),
     )
     client = AsyncMock()
@@ -892,5 +893,50 @@ async def test_telegram_http_failure_is_not_silent():
     context.__aenter__.return_value = client
     context.__aexit__.return_value = False
     with patch("jobapply.utils.telegram.httpx.AsyncClient", return_value=context):
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(RuntimeError) as exc_info:
             await TelegramClient()._send_single_message("hello", None)
+        assert fake_token not in str(exc_info.value)
+        assert "400 Client Error" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_telegram_poll_failure_redacts_credentials():
+    response = MagicMock()
+    fake_token = "123456789:AAFakeTelegramTokenSecretXYZ"
+    response.raise_for_status.side_effect = httpx.ConnectError(
+        f"Connection failed for https://api.telegram.org/bot{fake_token}/getUpdates: connection refused",
+        request=httpx.Request("POST", f"https://api.telegram.org/bot{fake_token}/getUpdates"),
+    )
+    client = AsyncMock()
+    client.post.return_value = response
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+    context.__aexit__.return_value = False
+    with patch("jobapply.utils.telegram.httpx.AsyncClient", return_value=context):
+        with pytest.raises(RuntimeError) as exc_info:
+            await TelegramClient().wait_for_correlated_reply("nonce123", timeout=10)
+        assert fake_token not in str(exc_info.value)
+        assert "bot[REDACTED]" in str(exc_info.value) or "[REDACTED]" in str(exc_info.value)
+        assert "Connection failed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_dedup_store_preserves_exact_raw_job_id_semantics():
+    from jobapply.utils.dedup import DeduplicationStore
+
+    mock_collection = AsyncMock()
+    mock_collection.find_one.return_value = None
+
+    store = DeduplicationStore()
+    store.collection = mock_collection
+
+    raw_ids = ["job/123", "job:456", "job#789", "../job_traversal"]
+    for rid in raw_ids:
+        await store.is_seen(rid)
+        mock_collection.find_one.assert_awaited_with({"job_id": rid})
+
+        await store.mark_seen(rid, {"title": "Engineer", "api_key": "secret"})
+        call_args = mock_collection.update_one.call_args[0]
+        assert call_args[0] == {"job_id": rid}
+        assert call_args[1]["$set"]["job_id"] == rid
+        assert call_args[1]["$set"]["api_key"] == "[REDACTED]"

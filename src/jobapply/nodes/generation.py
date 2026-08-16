@@ -1,7 +1,5 @@
 """Generation node - cover letter + urgency check."""
 
-import os
-
 import yaml
 from langsmith.run_helpers import trace
 
@@ -9,7 +7,9 @@ from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
+from jobapply.utils.paths import get_cover_letter_path
 from jobapply.utils.prompts import get_cover_letter_prompt, get_urgency_check_prompt
+from jobapply.utils.redaction import redact_string
 from jobapply.utils.tracing import get_safe_job_metadata
 
 
@@ -26,8 +26,6 @@ async def generation_node(state: JobApplyState) -> dict:
     errors = list(state.get("errors") or [])
 
     base_resume_pdf = _data_path("resume.pdf")
-    output_dir = os.path.join("outputs", state["run_id"])
-    os.makedirs(output_dir, exist_ok=True)
 
     updates = {
         "cover_letter_text": "",
@@ -58,14 +56,14 @@ async def generation_node(state: JobApplyState) -> dict:
             profile_data = yaml.safe_load(f) or {}
         profile_text = yaml.dump(profile_data)
     except Exception as e:
-        errors.append(f"Profile load failed for generation: {str(e)}")
+        errors.append(f"Profile load failed for generation: {redact_string(str(e))}")
 
     resume_text = ""
     try:
         with open(_data_path("resume.md"), "r", encoding="utf-8") as f:
             resume_text = f.read()
     except Exception as e:
-        errors.append(f"Resume markdown load failed for generation: {str(e)}")
+        errors.append(f"Resume markdown load failed for generation: {redact_string(str(e))}")
 
     try:
         llm = get_llm(temperature=0.4, max_output_tokens=768)
@@ -82,8 +80,11 @@ async def generation_node(state: JobApplyState) -> dict:
         ) as run_tree:
             cover_letter_result = await llm.ainvoke(cover_letter_prompt)
             cover_letter_text = getattr(cover_letter_result, "content", str(cover_letter_result))
-            cover_letter_path = os.path.join(
-                output_dir, f"cover_letter_{current_job['job_id']}.txt"
+            cover_letter_path = str(
+                get_cover_letter_path(
+                    run_id=state.get("run_id", "default_run"),
+                    job_id=str(current_job.get("job_id", "unknown")),
+                )
             )
 
             with open(cover_letter_path, "w", encoding="utf-8") as f:
@@ -96,7 +97,7 @@ async def generation_node(state: JobApplyState) -> dict:
                 run_tree.metadata["cover_letter_path"] = cover_letter_path
                 run_tree.metadata["cover_letter_length"] = len(cover_letter_text)
     except Exception as e:
-        error_msg = f"Cover letter generation failed for {current_job.get('title', 'unknown job')}: {str(e)}"
+        error_msg = f"Cover letter generation failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
         errors.append(error_msg)
         updates["application_status"] = "failed"
         updates["application_error"] = error_msg
@@ -154,7 +155,7 @@ async def generation_node(state: JobApplyState) -> dict:
                     run_tree.metadata["has_proposed_edits"] = bool(proposed_edits)
         except Exception as e:
             errors.append(
-                f"Urgency check failed for {current_job.get('title', 'unknown job')}: {str(e)}"
+                f"Urgency check failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
             )
 
     return {**updates, "errors": errors}

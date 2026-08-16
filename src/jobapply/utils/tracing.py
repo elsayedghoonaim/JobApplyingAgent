@@ -2,6 +2,8 @@
 
 from typing import Any, Optional
 
+from jobapply.utils.redaction import redact_data, redact_string
+
 
 def get_safe_job_metadata(job: dict, include_description: bool = False) -> dict[str, Any]:
     """Extract safe metadata from a job dict for tracing.
@@ -18,14 +20,14 @@ def get_safe_job_metadata(job: dict, include_description: bool = False) -> dict[
         "job_title": job.get("title", "unknown"),
         "company": job.get("company", "unknown"),
         "location": job.get("location", "unknown"),
-        "url": job.get("url", ""),
+        "url": redact_string(str(job.get("url", ""))),
     }
 
     if include_description:
         # Only include if explicitly requested (not recommended for privacy)
         metadata["description_length"] = len(job.get("description", ""))
 
-    return metadata
+    return redact_data(metadata)
 
 
 def get_safe_error_metadata(error: Exception) -> dict[str, Any]:
@@ -37,9 +39,10 @@ def get_safe_error_metadata(error: Exception) -> dict[str, Any]:
     Returns:
         Safe metadata dict with error type and message.
     """
+    sanitized_msg = redact_string(str(error))[:200]
     return {
         "error_type": type(error).__name__,
-        "error_message": str(error)[:200],  # truncate long messages
+        "error_message": sanitized_msg,
     }
 
 
@@ -84,7 +87,7 @@ def get_browser_metadata(
         metadata["contexts_count"] = contexts_count
 
     if error:
-        metadata["error"] = error[:200]
+        metadata["error"] = redact_string(str(error))[:200]
 
     return metadata
 

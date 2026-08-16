@@ -7,6 +7,7 @@ import httpx
 from langsmith.run_helpers import trace
 
 from jobapply.settings import get_settings
+from jobapply.utils.redaction import redact_string
 from jobapply.utils.tracing import get_telegram_metadata
 
 
@@ -66,15 +67,22 @@ class TelegramClient:
         payload = {"chat_id": self.settings.telegram_chat_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(f"{self._base_url}/sendMessage", json=payload)
-            response.raise_for_status()
-            data = response.json()
-            if not data.get("ok"):
-                raise RuntimeError(
-                    f"Telegram sendMessage failed: {data.get('description', 'unknown error')}"
-                )
-            return data.get("result", {}).get("message_id")
+        token = self.settings.telegram_bot_token
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(f"{self._base_url}/sendMessage", json=payload)
+                response.raise_for_status()
+                data = response.json()
+                if not data.get("ok"):
+                    desc = redact_string(
+                        str(data.get("description", "unknown error")),
+                        extra_secrets=[token],
+                    )
+                    raise RuntimeError(f"Telegram sendMessage failed: {desc}")
+                return data.get("result", {}).get("message_id")
+        except Exception as exc:
+            sanitized = redact_string(str(exc), extra_secrets=[token])
+            raise RuntimeError(f"Telegram sendMessage error: {sanitized}") from None
 
     async def wait_for_correlated_reply(
         self,
@@ -90,39 +98,47 @@ class TelegramClient:
         ) as run_tree:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
-                while loop.time() < deadline:
-                    poll_timeout = max(1, min(5, int(deadline - loop.time())))
-                    offset = -1 if self._last_update_id is None else self._last_update_id + 1
-                    response = await client.post(
-                        f"{self._base_url}/getUpdates",
-                        json={"offset": offset, "timeout": poll_timeout},
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    if not data.get("ok"):
-                        raise RuntimeError(
-                            f"Telegram getUpdates failed: {data.get('description', 'unknown error')}"
+            token = self.settings.telegram_bot_token
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+                    while loop.time() < deadline:
+                        poll_timeout = max(1, min(5, int(deadline - loop.time())))
+                        offset = -1 if self._last_update_id is None else self._last_update_id + 1
+                        response = await client.post(
+                            f"{self._base_url}/getUpdates",
+                            json={"offset": offset, "timeout": poll_timeout},
                         )
-                    for update in data.get("result", []):
-                        self._last_update_id = max(
-                            self._last_update_id or 0,
-                            update["update_id"],
-                        )
-                        reply = correlated_reply_text(
-                            update.get("message", {}),
-                            self.settings.telegram_chat_id,
-                            nonce,
-                            reply_to_message_id,
-                        )
-                        if reply is not None:
-                            if run_tree:
-                                run_tree.metadata.update(
-                                    get_telegram_metadata(
-                                        nonce=nonce, timeout=timeout, timed_out=False
+                        response.raise_for_status()
+                        data = response.json()
+                        if not data.get("ok"):
+                            desc = redact_string(
+                                str(data.get("description", "unknown error")),
+                                extra_secrets=[token],
+                            )
+                            raise RuntimeError(f"Telegram getUpdates failed: {desc}")
+                        for update in data.get("result", []):
+                            self._last_update_id = max(
+                                self._last_update_id or 0,
+                                update["update_id"],
+                            )
+                            reply = correlated_reply_text(
+                                update.get("message", {}),
+                                self.settings.telegram_chat_id,
+                                nonce,
+                                reply_to_message_id,
+                            )
+                            if reply is not None:
+                                if run_tree:
+                                    run_tree.metadata.update(
+                                        get_telegram_metadata(
+                                            nonce=nonce, timeout=timeout, timed_out=False
+                                        )
                                     )
-                                )
-                            return reply
+                                return reply
+            except Exception as exc:
+                sanitized = redact_string(str(exc), extra_secrets=[token])
+                raise RuntimeError(f"Telegram getUpdates error: {sanitized}") from None
+
             if run_tree:
                 run_tree.metadata.update(
                     get_telegram_metadata(nonce=nonce, timeout=timeout, timed_out=True)

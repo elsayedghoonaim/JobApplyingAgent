@@ -13,6 +13,8 @@ from jobapply.settings import get_settings
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.llm import close_llm_client
 from jobapply.utils.monitoring import ProgressTracker, setup_logging
+from jobapply.utils.paths import get_run_output_dir, validate_run_id
+from jobapply.utils.redaction import redact_string
 from jobapply.utils.tracing import get_session_metadata
 
 
@@ -41,12 +43,16 @@ async def run(
     settings = get_settings()
     effective_dry_run = dry_run if dry_run is not None else settings.dry_run
     resume_requested = run_id is not None
-    run_id = run_id or str(uuid4())
+    if resume_requested:
+        run_id = validate_run_id(run_id)
+    else:
+        run_id = str(uuid4())
 
-    # Setup logging
+    # Setup safe logging directory
+    output_dir = get_run_output_dir(run_id)
     logger = setup_logging(run_id)
     logger.info(f"🚀 Starting job application agent (run_id: {run_id})")
-    logger.info(f"📁 Logs: outputs/{run_id}/")
+    logger.info(f"📁 Logs: {output_dir}")
 
     # Load daily count from MongoDB
     dedup = DeduplicationStore()
@@ -194,7 +200,7 @@ async def run(
         logger.warning("\n⚠️  Interrupted by user. State saved to checkpoint.")
         logger.info(f"   Resume with: jobapply --run-id {run_id}")
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"❌ Error: {redact_string(str(e))}")
         logger.info(f"   Resume with: jobapply --run-id {run_id}")
         raise
     finally:
@@ -204,6 +210,12 @@ async def run(
 
 def main():
     """CLI entry point."""
+
+    def valid_run_id_arg(value: str) -> str:
+        try:
+            return validate_run_id(value)
+        except ValueError as err:
+            raise argparse.ArgumentTypeError(str(err)) from err
 
     def non_negative_int(value: str) -> int:
         parsed = int(value)
@@ -216,7 +228,7 @@ def main():
     )
     parser.add_argument(
         "--run-id",
-        type=str,
+        type=valid_run_id_arg,
         help="Reuse run ID to resume from checkpoint",
     )
     parser.add_argument(

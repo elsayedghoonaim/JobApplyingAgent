@@ -6,6 +6,7 @@ from typing import ClassVar
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from jobapply.settings import get_settings
+from jobapply.utils.redaction import redact_data
 
 
 class DeduplicationStore:
@@ -25,7 +26,7 @@ class DeduplicationStore:
         """Check if a job ID has been seen before.
 
         Args:
-            job_id: Job ID to check.
+            job_id: Exact job ID to check.
 
         Returns:
             True if job has been seen, False otherwise.
@@ -36,15 +37,16 @@ class DeduplicationStore:
         """Mark a job as seen with metadata.
 
         Args:
-            job_id: Job ID to mark as seen.
+            job_id: Exact job ID to mark as seen.
             metadata: Additional metadata to store (title, company, url, qualification data, etc.).
         """
+        safe_metadata = redact_data(metadata)
         await self.collection.update_one(
             {"job_id": job_id},
             {
                 "$set": {
                     "job_id": job_id,
-                    **metadata,
+                    **safe_metadata,
                     "evaluated_at": datetime.now(timezone.utc),
                     "updated_at": datetime.now(timezone.utc),
                 }

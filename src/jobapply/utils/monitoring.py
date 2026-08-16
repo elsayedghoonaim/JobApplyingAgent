@@ -3,11 +3,21 @@
 import logging
 import sys
 from datetime import datetime
-from pathlib import Path
+
+from jobapply.utils.paths import get_run_output_dir, get_safe_artifact_path
+from jobapply.utils.redaction import redact_string
+
+
+class RedactingFormatter(logging.Formatter):
+    """Logging formatter that automatically scrubs sensitive credentials."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        original = super().format(record)
+        return redact_string(original)
 
 
 def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
-    """Setup logging to both file and console.
+    """Setup logging to both file and console with automatic secret redaction and safe paths.
 
     Args:
         run_id: Current run ID for log file naming.
@@ -22,9 +32,8 @@ def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
         if reconfigure:
             reconfigure(encoding="utf-8", errors="replace")
 
-    # Create log directory
-    log_path = Path(log_dir) / run_id
-    log_path.mkdir(parents=True, exist_ok=True)
+    # Create safe log directory
+    get_run_output_dir(run_id, log_dir)
 
     # Create logger
     logger = logging.getLogger("jobapply")
@@ -34,10 +43,15 @@ def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
     logger.handlers.clear()
 
     # File handler (detailed logs)
-    log_file = log_path / f"jobapply_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = get_safe_artifact_path(
+        run_id=run_id,
+        filename=f"jobapply_{timestamp}.log",
+        base_dir=log_dir,
+    )
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(
+    file_formatter = RedactingFormatter(
         "%(asctime)s [%(levelname)s] %(name)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
     file_handler.setFormatter(file_formatter)
@@ -45,7 +59,7 @@ def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
     # Console handler (important messages only)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter("%(message)s")
+    console_formatter = RedactingFormatter("%(message)s")
     console_handler.setFormatter(console_formatter)
 
     # Add handlers
