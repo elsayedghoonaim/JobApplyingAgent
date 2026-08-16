@@ -60,9 +60,8 @@ async def run(
     # Load daily count from MongoDB
     dedup = DeduplicationStore()
     daily_count = await dedup.get_daily_count()
-    seen_ids = await dedup.load_seen_ids(for_live_run=not effective_dry_run)
 
-    logger.info(f"📊 Loaded {len(seen_ids)} seen jobs, {daily_count} applications today")
+    logger.info(f"📊 Application count today: {daily_count}")
 
     # Initialize state
     initial_state = {
@@ -74,7 +73,7 @@ async def run(
         "current_job_index": 0,
         "current_job": None,
         "search_failed": False,
-        "seen_job_ids": seen_ids,
+        "seen_job_ids": set(),
         "qualification_result": None,
         "edits_urgent": False,
         "proposed_edits": None,

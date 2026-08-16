@@ -24,7 +24,7 @@ async def qualification_node(state: JobApplyState) -> dict:
         State updates dict with qualification result.
     """
     settings = get_settings()
-    current_job = state["current_job"]
+    current_job = state.get("current_job")
 
     if not current_job:
         return {
@@ -39,10 +39,32 @@ async def qualification_node(state: JobApplyState) -> dict:
 
     exclusion_reason = get_job_exclusion_reason(current_job)
     if exclusion_reason:
-        print(f"⛔ EXCLUDED - {exclusion_reason} | {current_job['title']}")
+        print(f"⛔ EXCLUDED - {exclusion_reason} | {current_job.get('title')}")
         seen_job_ids = set(state.get("seen_job_ids") or set())
+        errors = list(state.get("errors") or [])
         if current_job.get("job_id"):
             seen_job_ids.add(current_job["job_id"])
+            try:
+                dedup = DeduplicationStore()
+                await dedup.mark_seen(
+                    current_job["job_id"],
+                    {
+                        "job_id": current_job["job_id"],
+                        "title": current_job.get("title"),
+                        "company": current_job.get("company"),
+                        "location": current_job.get("location"),
+                        "url": current_job.get("url"),
+                        "status": "not_qualified",
+                        "reason": exclusion_reason,
+                    },
+                )
+            except Exception as e:
+                err_msg = (
+                    f"Failed to persist exclusion for {current_job['job_id']}: ({type(e).__name__})"
+                )
+                print(f"[DEBUG] {err_msg}")
+                errors.append(err_msg)
+
         return {
             "qualification_result": {
                 "qualified": False,
@@ -56,6 +78,7 @@ async def qualification_node(state: JobApplyState) -> dict:
             "jobs_evaluated_count": state.get("jobs_evaluated_count", 0) + 1,
             "qualified_jobs_count": state.get("qualified_jobs_count", 0),
             "not_qualified_jobs_count": state.get("not_qualified_jobs_count", 0) + 1,
+            "errors": errors,
         }
 
     # Load user profile
@@ -75,6 +98,7 @@ async def qualification_node(state: JobApplyState) -> dict:
         response_json_schema=QualificationResult.model_json_schema(),
     )
 
+    errors = list(state.get("errors") or [])
     try:
         async with trace(
             "llm_qualification_scoring",
@@ -96,11 +120,11 @@ async def qualification_node(state: JobApplyState) -> dict:
 
             if qualified:
                 print(
-                    f"✅ QUALIFIED - Score: {result.score:.2f} | {current_job['title']} at {current_job['company']}"
+                    f"✅ QUALIFIED - Score: {result.score:.2f} | {current_job.get('title')} at {current_job.get('company')}"
                 )
             else:
                 print(
-                    f"❌ Not qualified - Score: {result.score:.2f} (threshold: {settings.qualification_threshold}) | {current_job['title']}"
+                    f"❌ Not qualified - Score: {result.score:.2f} (threshold: {settings.qualification_threshold}) | {current_job.get('title')}"
                 )
 
             # Update trace with qualification result
@@ -116,48 +140,50 @@ async def qualification_node(state: JobApplyState) -> dict:
                 )
 
         # Mark job as seen in dedup store with full details
-        async with trace(
-            "mongodb_store_job", run_type="tool", metadata={"job_id": current_job["job_id"]}
-        ):
-            dedup = DeduplicationStore()
+        try:
+            async with trace(
+                "mongodb_store_job", run_type="tool", metadata={"job_id": current_job["job_id"]}
+            ):
+                dedup = DeduplicationStore()
 
-            # Prepare job data - avoid redundant fields
-            job_data = {
-                "job_id": current_job["job_id"],
-                "title": current_job["title"],  # From LinkedIn
-                "company": current_job["company"],
-                "location": current_job[
-                    "location"
-                ],  # From LinkedIn card (e.g., "United Kingdom (Remote)")
-                "url": current_job["url"],
-                "description": current_job["description"],  # Cleaned description only
-                "job_summary": result.job_summary,  # LLM-generated: what you'll work on
-                "qualification_score": result.score,
-                "qualification_reasoning": result.reasoning,
-                "key_matches": result.key_matches,
-                "gaps": result.gaps,
-                "status": "qualified" if qualified else "not_qualified",
-            }
+                job_data = {
+                    "job_id": current_job["job_id"],
+                    "title": current_job.get("title"),
+                    "company": current_job.get("company"),
+                    "location": current_job.get("location"),
+                    "url": current_job.get("url"),
+                    "description": current_job.get("description"),
+                    "job_summary": result.job_summary,
+                    "qualification_score": result.score,
+                    "qualification_reasoning": result.reasoning,
+                    "key_matches": result.key_matches,
+                    "gaps": result.gaps,
+                    "status": "qualified" if qualified else "not_qualified",
+                }
 
-            # Add parsed fields ONLY if they differ from LinkedIn data or provide new info
-            parsed_location = current_job.get("parsed_location")
-            if parsed_location and parsed_location != current_job["location"]:
-                job_data["parsed_location"] = parsed_location
+                parsed_location = current_job.get("parsed_location")
+                if parsed_location and parsed_location != current_job.get("location"):
+                    job_data["parsed_location"] = parsed_location
 
-            # Add unique parsed fields (not duplicated elsewhere)
-            if current_job.get("duration"):
-                job_data["duration"] = current_job["duration"]
-            if current_job.get("work_type"):
-                job_data["work_type"] = current_job["work_type"]
-            if current_job.get("responsibilities"):
-                job_data["responsibilities"] = current_job["responsibilities"]
-            if current_job.get("requirements"):
-                job_data["requirements"] = current_job["requirements"]
+                if current_job.get("duration"):
+                    job_data["duration"] = current_job["duration"]
+                if current_job.get("work_type"):
+                    job_data["work_type"] = current_job["work_type"]
+                if current_job.get("responsibilities"):
+                    job_data["responsibilities"] = current_job["responsibilities"]
+                if current_job.get("requirements"):
+                    job_data["requirements"] = current_job["requirements"]
 
-            await dedup.mark_seen(current_job["job_id"], job_data)
+                await dedup.mark_seen(current_job["job_id"], job_data)
+        except Exception as store_err:
+            err_msg = f"Failed to persist qualification for {current_job.get('job_id')}: ({type(store_err).__name__})"
+            print(f"[DEBUG] {err_msg}")
+            errors.append(err_msg)
 
-        # Add to in-memory seen set
-        state["seen_job_ids"].add(current_job["job_id"])
+        # Add to in-memory seen set (copying state immutably)
+        seen_job_ids = set(state.get("seen_job_ids") or set())
+        if current_job.get("job_id"):
+            seen_job_ids.add(current_job["job_id"])
 
         # Increment jobs evaluated counter
         jobs_evaluated = state.get("jobs_evaluated_count", 0) + 1
@@ -179,16 +205,17 @@ async def qualification_node(state: JobApplyState) -> dict:
                 "gaps": result.gaps,
                 "job_summary": result.job_summary,
             },
-            "seen_job_ids": state["seen_job_ids"],
+            "seen_job_ids": seen_job_ids,
             "jobs_evaluated_count": jobs_evaluated,
             "qualified_jobs_count": qualified_jobs,
             "not_qualified_jobs_count": not_qualified_jobs,
+            "errors": errors,
         }
 
     except Exception as e:
-        error_msg = f"Qualification error for {current_job['title']}: {str(e)}"
+        error_msg = f"Qualification error for {current_job.get('title', 'unknown')}: {str(e)}"
         jobs_evaluated = state.get("jobs_evaluated_count", 0) + 1
-        print(f"❌ ERROR during qualification: {current_job['title']} - {str(e)}")
+        print(f"❌ ERROR during qualification: {current_job.get('title', 'unknown')} - {str(e)}")
         return {
             "qualification_result": {
                 "qualified": False,
@@ -197,6 +224,7 @@ async def qualification_node(state: JobApplyState) -> dict:
                 "key_matches": [],
                 "gaps": [],
             },
+            "seen_job_ids": set(state.get("seen_job_ids") or set()),
             "jobs_evaluated_count": jobs_evaluated,
-            "errors": state["errors"] + [error_msg],
+            "errors": list(state.get("errors") or []) + [error_msg],
         }

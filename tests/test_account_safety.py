@@ -312,8 +312,15 @@ async def test_search_node_pauses_immediately_on_navigation_barrier(mock_managed
 
 
 @pytest.mark.asyncio
+@patch("jobapply.nodes.search.DeduplicationStore")
 @patch("jobapply.nodes.search.managed_browser")
-async def test_search_node_pauses_before_card_click_and_never_clicks(mock_managed_browser):
+async def test_search_node_pauses_before_card_click_and_never_clicks(
+    mock_managed_browser, mock_dedup_cls
+):
+    mock_store = AsyncMock()
+    mock_store.find_seen_ids.return_value = set()
+    mock_dedup_cls.return_value = mock_store
+
     mock_browser = AsyncMock()
     mock_context = AsyncMock()
     mock_page = AsyncMock()
