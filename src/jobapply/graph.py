@@ -26,6 +26,9 @@ from jobapply.utils.limits import caps_reached
 def route_select_next_job(state: JobApplyState) -> str:
     """Three-tier exhaustion: next unseen job → next page → next query → done."""
 
+    if state.get("account_safety_paused"):
+        return "notification_node"
+
     if caps_reached(state):
         return "notification_node"
 
@@ -68,12 +71,16 @@ def route_select_next_job(state: JobApplyState) -> str:
 
 
 def route_start(state: JobApplyState) -> str:
-    """Avoid browser and LLM work when an application cap is already reached."""
-    return "notification_node" if caps_reached(state) else "search_node"
+    """Avoid browser and LLM work when an application cap is already reached or paused."""
+    if state.get("account_safety_paused") or caps_reached(state):
+        return "notification_node"
+    return "search_node"
 
 
 def route_after_qualification(state: JobApplyState) -> str:
     """Route after qualification check."""
+    if state.get("account_safety_paused"):
+        return "notification_node"
     result = state.get("qualification_result") or {}
     if result.get("qualified"):
         return "generation_node"
@@ -82,6 +89,8 @@ def route_after_qualification(state: JobApplyState) -> str:
 
 def route_after_generation(state: JobApplyState) -> str:
     """Route after generation - fast path or approval path."""
+    if state.get("account_safety_paused"):
+        return "notification_node"
     if state.get("application_status") == "failed":
         return "select_next_job_node"
     if state.get("edits_urgent", False):
@@ -91,6 +100,8 @@ def route_after_generation(state: JobApplyState) -> str:
 
 def route_after_approval(state: JobApplyState) -> str:
     """Route after user approval response."""
+    if state.get("account_safety_paused"):
+        return "notification_node"
     if state.get("approval_status") == "skip":
         return "select_next_job_node"  # continues session
     return "execution_node"
@@ -98,7 +109,7 @@ def route_after_approval(state: JobApplyState) -> str:
 
 def route_post_processing(state: JobApplyState) -> str:
     """Unified exit router — used after execution."""
-    if caps_reached(state):
+    if state.get("account_safety_paused") or caps_reached(state):
         return "notification_node"
     return "select_next_job_node"
 
@@ -249,6 +260,7 @@ def build_graph() -> StateGraph:
         {
             "generation_node": "generation_node",
             "select_next_job_node": "select_next_job_node",
+            "notification_node": "notification_node",
         },
     )
 
@@ -259,6 +271,7 @@ def build_graph() -> StateGraph:
         {
             "execution_node": "execution_node",
             "approval_node": "approval_node",
+            "notification_node": "notification_node",
         },
     )
 
@@ -269,6 +282,7 @@ def build_graph() -> StateGraph:
         {
             "execution_node": "execution_node",
             "select_next_job_node": "select_next_job_node",
+            "notification_node": "notification_node",
         },
     )
 

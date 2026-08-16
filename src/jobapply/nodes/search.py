@@ -8,6 +8,12 @@ from langsmith.run_helpers import trace
 
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
+from jobapply.utils.account_safety import (
+    AccountSafetyBarrierError,
+    guard_page_account_safety,
+    normalize_safety_log_payload,
+    sanitize_evidence_string,
+)
 from jobapply.utils.browser import get_randomized_delay, managed_browser
 from jobapply.utils.job_filters import (
     find_disallowed_required_languages,
@@ -17,6 +23,37 @@ from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
 from jobapply.utils.prompts import get_job_parser_prompt
 from jobapply.utils.tracing import get_search_metadata
+
+
+def _account_safety_search_update(state: JobApplyState, detection) -> dict:
+    """Produce explicit, non-infrastructure-failure pause state update."""
+    norm = normalize_safety_log_payload(
+        run_id=str(state.get("run_id") or "unknown"),
+        barrier_type=detection.barrier_type.value if detection.barrier_type else None,
+        stage=detection.stage,
+        reason=detection.reason,
+        url=detection.url,
+        resume_instructions=detection.resume_instructions,
+    )
+    btype_val = detection.barrier_type.value if detection.barrier_type else "unknown"
+    safe_evidence = (
+        sanitize_evidence_string(detection.evidence, max_length=120) if detection.evidence else None
+    )
+    return {
+        "job_listings": [],
+        "current_job_index": 0,
+        "current_job": None,
+        "search_failed": False,
+        "account_safety_paused": True,
+        "account_safety_barrier_type": btype_val,
+        "account_safety_reason": norm["reason"],
+        "account_safety_stage": norm["stage"],
+        "account_safety_url": norm["url"],
+        "account_safety_detected_at": detection.detected_at,
+        "account_safety_evidence": safe_evidence,
+        "account_safety_resume_instructions": norm["resume_instructions"],
+        "logs": state["logs"] + [f"🛑 Account-safety pause ({btype_val}): {norm['reason']}"],
+    }
 
 
 def build_search_url(base_url: str, query: str, page_num: int) -> str:
@@ -171,7 +208,13 @@ async def search_node(state: JobApplyState) -> dict:
                 page = await context.new_page()
 
                 # Navigate to search results
-                await page.goto(search_url, wait_until="domcontentloaded")
+                response = await page.goto(search_url, wait_until="domcontentloaded")
+                http_status = response.status if response else None
+
+                # Guard search navigation
+                await guard_page_account_safety(
+                    page, stage="search_navigation", http_status=http_status
+                )
 
                 # Wait for job cards to load (updated selector for new LinkedIn structure)
                 try:
@@ -328,12 +371,17 @@ async def search_node(state: JobApplyState) -> dict:
                             if location_elem
                             else "Unknown"
                         )
-                        job_url = await link_elem.get_attribute("href")
 
                         print(f"[DEBUG] Extracting: {title} at {company}")
 
+                        # Guard immediately BEFORE card click
+                        await guard_page_account_safety(page, stage="search_pre_card_click")
+
                         # Click to load full description
                         await link_elem.click()
+
+                        # Guard card click navigation
+                        await guard_page_account_safety(page, stage="search_card_click")
 
                         # Extract full description (wait for it to load)
                         try:
@@ -379,20 +427,21 @@ async def search_node(state: JobApplyState) -> dict:
                                 "required_languages": parsed.get("required_languages", []),
                             }
                         )
+                        print(f"✅ Extracted job {job_id}: {title} at {company}")
 
-                        # Check if we have extracted enough new unseen jobs for this batch
+                        # Check if we have enough unseen jobs in this batch
                         if len(job_listings) >= unseen_limit:
                             print(
-                                f"[DEBUG] Reached target unseen jobs limit ({unseen_limit}), stopping extraction."
+                                f"[DEBUG] Reached unseen limit ({len(job_listings)} >= {unseen_limit}), finishing page extraction"
                             )
                             break
 
                         await asyncio.sleep(get_randomized_delay() / 2)  # Small delay between cards
 
                     except Exception as e:
-                        # Skip problematic cards
-                        job_id_str = locals().get("job_id", "unknown")
-                        print(f"[DEBUG] Error extracting job {job_id_str}: {str(e)}")
+                        if isinstance(e, AccountSafetyBarrierError):
+                            raise e
+                        print(f"[DEBUG] Error extracting job {job_id}: {e}")
                         import traceback
 
                         print(f"[DEBUG] Traceback: {traceback.format_exc()}")
@@ -400,7 +449,7 @@ async def search_node(state: JobApplyState) -> dict:
 
                 await page.close()
 
-                print(f"✅ Found {len(job_listings)} jobs for '{query}' page {page_num}")
+                print(f"\n✅ Found {len(job_listings)} jobs for '{query}' page {page_num}")
 
                 # Update trace with results
                 if run_tree:
@@ -417,6 +466,13 @@ async def search_node(state: JobApplyState) -> dict:
             + [f"Fetched {len(job_listings)} jobs for '{query}' page {page_num}"],
         }
 
+    except AccountSafetyBarrierError as safety_err:
+        try:
+            if page is not None and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
+        return _account_safety_search_update(state, safety_err.detection)
     except Exception as e:
         error_msg = f"Search failed for '{query}' page {page_num}: {str(e)}"
         print(f"[ERROR] {error_msg}")

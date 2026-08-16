@@ -10,6 +10,9 @@ from langchain_core.tracers.context import tracing_v2_enabled
 
 from jobapply.graph import compile_graph, make_graph_config
 from jobapply.settings import get_settings
+from jobapply.utils.account_safety import (
+    normalize_safety_log_payload,
+)
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.llm import close_llm_client
 from jobapply.utils.monitoring import ProgressTracker, setup_logging
@@ -85,6 +88,14 @@ async def run(
         "application_error": None,
         "form_qa_exchanges": None,
         "notification_sent": False,
+        "account_safety_paused": False,
+        "account_safety_barrier_type": None,
+        "account_safety_reason": None,
+        "account_safety_stage": None,
+        "account_safety_url": None,
+        "account_safety_detected_at": None,
+        "account_safety_evidence": None,
+        "account_safety_resume_instructions": None,
         "run_id": run_id,
         "dry_run": effective_dry_run,
         "applications_count": 0,
@@ -148,11 +159,34 @@ async def run(
                 initial_state,
             )
             if resume_requested and snapshot and snapshot.values:
-                logger.info(
-                    "Resuming from the saved checkpoint"
-                    if snapshot.next
-                    else "Run is already complete; using its saved result"
-                )
+                if snapshot.values.get("account_safety_paused"):
+                    norm = normalize_safety_log_payload(
+                        run_id=str(run_id or "unknown"),
+                        barrier_type=str(
+                            snapshot.values.get("account_safety_barrier_type") or "SECURITY BARRIER"
+                        ),
+                        stage=str(snapshot.values.get("account_safety_stage") or "unknown"),
+                        reason=str(
+                            snapshot.values.get("account_safety_reason")
+                            or "Account safety challenge detected"
+                        ),
+                        url=str(
+                            snapshot.values.get("account_safety_url") or "https://www.linkedin.com"
+                        ),
+                        resume_instructions=str(
+                            snapshot.values.get("account_safety_resume_instructions") or ""
+                        ),
+                    )
+                    logger.warning(
+                        f"🛑 Saved run '{norm['run_id']}' was paused due to an account-safety barrier: {norm['reason']}. "
+                        "Resolve manually in Microsoft Edge, then start a NEW session (do not reuse the paused run ID)."
+                    )
+                else:
+                    logger.info(
+                        "Resuming from the saved checkpoint"
+                        if snapshot.next
+                        else "Run is already complete; using its saved result"
+                    )
 
             result = (
                 saved_result

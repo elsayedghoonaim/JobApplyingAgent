@@ -5,10 +5,12 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from typing import Optional
 from uuid import uuid4
 
 from langsmith.run_helpers import trace
 
+from jobapply.models.application import ApplicationStatus
 from jobapply.nodes.outcomes import (
     append_application_outcome,
     build_application_outcome,
@@ -17,6 +19,17 @@ from jobapply.nodes.outcomes import (
 )
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
+from jobapply.utils.account_safety import (
+    SAFE_RESUME_INSTRUCTIONS,
+    AccountSafetyBarrierError,
+    AccountSafetyBarrierType,
+    AccountSafetyDetection,
+    guard_page_account_safety,
+    inspect_page_account_safety,
+    normalize_safety_log_payload,
+    sanitize_evidence_string,
+    sanitize_url_for_evidence,
+)
 from jobapply.utils.browser import get_randomized_delay, managed_browser, take_error_screenshot
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.json_output import extract_json_object
@@ -471,29 +484,83 @@ async def find_already_applied_indicator(page) -> str | None:
     return None
 
 
-async def wait_for_submission_confirmation(page, timeout_ms: int = 12000) -> bool:
-    """Return True only when LinkedIn exposes an explicit success state."""
+async def wait_for_submission_or_safety(
+    page, timeout_ms: int = 12000
+) -> tuple[bool, Optional[AccountSafetyDetection]]:
+    """Poll for both explicit LinkedIn submission confirmation and account safety barriers.
+
+    Returns:
+        (True, None) if explicit submission success is confirmed.
+        (False, detection) if an account safety barrier is detected during or after submission.
+        (False, None) if timeout occurs without confirmation or barrier (unconfirmed).
+    """
     success_phrases = (
         "application submitted",
         "application sent",
         "your application was sent",
     )
-    try:
-        await page.wait_for_function(
-            """phrases => {
-                const text = (document.body?.innerText || '').toLowerCase();
-                return phrases.some(phrase => text.includes(phrase));
-            }""",
-            list(success_phrases),
-            timeout=timeout_ms,
+    import time
+
+    start_time = time.monotonic()
+    deadline = start_time + (timeout_ms / 1000.0)
+
+    while time.monotonic() < deadline:
+        # 1. Check account safety barrier first
+        safety = await inspect_page_account_safety(
+            page, stage="execution_post_submit", fail_closed=True
         )
-        return True
-    except Exception:
+        if safety.detected:
+            return False, safety
+
+        # 2. Check for explicit success confirmation
         try:
-            body_text = (await page.locator("body").inner_text()).lower()
-            return any(phrase in body_text for phrase in success_phrases)
+            if hasattr(page, "wait_for_function"):
+                await page.wait_for_function(
+                    """phrases => {
+                        const text = (document.body?.innerText || '').toLowerCase();
+                        return phrases.some(phrase => text.includes(phrase));
+                    }""",
+                    list(success_phrases),
+                    timeout=500,
+                )
+                return True, None
         except Exception:
-            return False
+            pass
+
+        try:
+            confirmed = await page.evaluate(
+                """(phrases) => {
+                    const text = (document.body?.innerText || '').toLowerCase();
+                    return phrases.some(phrase => text.includes(phrase));
+                }""",
+                list(success_phrases),
+            )
+            if confirmed:
+                return True, None
+        except Exception:
+            try:
+                body_text = (await page.locator("body").inner_text()).lower()
+                if any(phrase in body_text for phrase in success_phrases):
+                    return True, None
+            except Exception:
+                pass
+
+        await asyncio.sleep(0.5)
+
+    # Final safety inspection at deadline before declaring unconfirmed
+    final_safety = await inspect_page_account_safety(
+        page, stage="execution_post_submit", fail_closed=True
+    )
+    if final_safety.detected:
+        return False, final_safety
+
+    return False, None
+
+
+async def wait_for_submission_confirmation(page, timeout_ms: int = 12000) -> bool:
+    """Return True only when LinkedIn exposes an explicit success state."""
+    confirmed, _ = await wait_for_submission_or_safety(page, timeout_ms=timeout_ms)
+    return confirmed
 
 
 async def extract_answer_from_reply(
@@ -771,6 +838,78 @@ def _manual_review_update(
     }
 
 
+def _account_safety_execution_update(
+    state: JobApplyState,
+    detection: AccountSafetyDetection,
+    current_job: dict,
+    form_qa_exchanges: list[dict],
+    *,
+    pre_submit: bool = True,
+) -> dict:
+    """Build an account safety pause update for execution node without incrementing counters."""
+    norm = normalize_safety_log_payload(
+        run_id=str(state.get("run_id") or "unknown"),
+        barrier_type=detection.barrier_type.value if detection.barrier_type else None,
+        stage=detection.stage,
+        reason=detection.reason,
+        url=detection.url,
+        resume_instructions=detection.resume_instructions,
+    )
+    btype_val = detection.barrier_type.value if detection.barrier_type else "unknown"
+    safe_evidence = (
+        sanitize_evidence_string(detection.evidence, max_length=120) if detection.evidence else None
+    )
+    if pre_submit:
+        reason = f"account_safety_paused:{btype_val}"
+        error_msg = norm["reason"]
+        extra = {
+            "account_safety_barrier": {
+                "barrier_type": btype_val,
+                "reason": norm["reason"],
+                "stage": norm["stage"],
+                "url": norm["url"],
+            },
+            "ambiguous_submission": False,
+        }
+    else:
+        reason = f"ambiguous_post_submit_barrier:{btype_val}"
+        error_msg = f"Submission status ambiguous: safety barrier or inspection unavailable ({norm['reason']})"
+        extra = {
+            "account_safety_barrier": {
+                "barrier_type": btype_val,
+                "reason": norm["reason"],
+                "stage": norm["stage"],
+                "url": norm["url"],
+            },
+            "ambiguous_submission": True,
+        }
+
+    outcome = build_application_outcome(
+        state,
+        ApplicationStatus.NEEDS_MANUAL_REVIEW.value,
+        reason=reason,
+        error=error_msg,
+        qa_count=len(form_qa_exchanges),
+        extra=extra,
+    )
+
+    return {
+        "account_safety_paused": True,
+        "account_safety_barrier_type": btype_val,
+        "account_safety_reason": norm["reason"],
+        "account_safety_stage": norm["stage"],
+        "account_safety_url": norm["url"],
+        "account_safety_detected_at": detection.detected_at,
+        "account_safety_evidence": safe_evidence,
+        "account_safety_resume_instructions": norm["resume_instructions"],
+        "application_status": ApplicationStatus.NEEDS_MANUAL_REVIEW.value,
+        "application_error": error_msg,
+        "form_qa_exchanges": form_qa_exchanges,
+        "application_outcomes": append_application_outcome(state, outcome),
+        "logs": state["logs"] + [f"🛑 Account-safety pause ({btype_val}): {error_msg}"],
+    }
+
+
 def _failed_update(state: JobApplyState, error: str, form_qa_exchanges: list[dict]) -> dict:
     """Build a failed outcome update."""
     outcome = build_application_outcome(
@@ -902,6 +1041,7 @@ async def execution_node(state: JobApplyState) -> dict:
         )
 
     application_submitted = False
+    submission_attempted = False
     page = None
 
     try:
@@ -926,8 +1066,14 @@ async def execution_node(state: JobApplyState) -> dict:
 
                 # Navigate to job
                 print("[LIVE] Navigating to job page...")
-                await page.goto(current_job["url"], wait_until="domcontentloaded")
+                response = await page.goto(current_job["url"], wait_until="domcontentloaded")
+                http_status = response.status if response else None
                 await asyncio.sleep(get_randomized_delay())
+
+                # Guard job page navigation
+                await guard_page_account_safety(
+                    page, stage="execution_navigation", http_status=http_status
+                )
 
                 # Check for Easy Apply button
                 try:
@@ -979,6 +1125,9 @@ async def execution_node(state: JobApplyState) -> dict:
                         form_qa_exchanges,
                     )
 
+                # Guard immediately BEFORE clicking Easy Apply
+                await guard_page_account_safety(page, stage="execution_pre_easy_apply_click")
+
                 # Click Easy Apply
                 print("[LIVE] Clicking 'Easy Apply' button...")
                 await (
@@ -987,6 +1136,9 @@ async def execution_node(state: JobApplyState) -> dict:
                     .first.click()
                 )
                 await asyncio.sleep(get_randomized_delay())
+
+                # Guard opening Easy Apply
+                await guard_page_account_safety(page, stage="execution_easy_apply_click")
 
                 # Multiple selectors LinkedIn uses for the Easy Apply modal
                 MODAL_SELECTORS = [
@@ -1003,6 +1155,9 @@ async def execution_node(state: JobApplyState) -> dict:
                 max_steps = 10  # safety limit
                 for step in range(max_steps):
                     print(f"\n📝 [LIVE] Processing Page {step + 1}...")
+
+                    # Guard at top of each form step
+                    await guard_page_account_safety(page, stage="execution_form_step_top")
 
                     # Wait for modal (longer timeout on first page)
                     modal_timeout = 8000 if step == 0 else 5000
@@ -1682,6 +1837,9 @@ async def execution_node(state: JobApplyState) -> dict:
 
                     if next_btn:
                         if navigation_action == "submit":
+                            # Guard immediately BEFORE submit (and BEFORE dry-run branch / enabled checks)
+                            await guard_page_account_safety(page, stage="execution_pre_submit")
+
                             # Final submit
                             if state["dry_run"]:
                                 print(
@@ -1731,23 +1889,56 @@ async def execution_node(state: JobApplyState) -> dict:
                                     form_qa_exchanges,
                                 )
 
+                            submission_attempted = True
                             print("🚀 [LIVE] CLICKING SUBMIT - SUBMITTING APPLICATION!")
                             await next_btn.click()
-                            if not await wait_for_submission_confirmation(page):
+
+                            # Monitor delayed post-submit safety barriers and confirmation
+                            confirmed, post_barrier = await wait_for_submission_or_safety(page)
+                            if post_barrier and post_barrier.detected:
+                                print(
+                                    f"🛑 [LIVE] Account safety barrier detected after submit: {post_barrier.reason}"
+                                )
                                 await page.close()
-                                return _manual_review_update(
+                                return _account_safety_execution_update(
                                     state,
-                                    "submission_unconfirmed",
-                                    "Submit was clicked but LinkedIn did not confirm success",
+                                    post_barrier,
+                                    current_job,
                                     form_qa_exchanges,
+                                    pre_submit=False,
+                                )
+
+                            if not confirmed:
+                                await page.close()
+                                unconfirmed_detection = AccountSafetyDetection(
+                                    detected=True,
+                                    barrier_type=AccountSafetyBarrierType.INSPECTION_UNAVAILABLE,
+                                    reason="Submit was clicked but LinkedIn confirmation was unconfirmed within timeout",
+                                    stage="execution_post_submit_timeout",
+                                    url=sanitize_url_for_evidence(getattr(page, "url", "")),
+                                    detected_at=datetime.now(timezone.utc).isoformat(),
+                                    resume_instructions=SAFE_RESUME_INSTRUCTIONS,
+                                )
+                                return _account_safety_execution_update(
+                                    state,
+                                    unconfirmed_detection,
+                                    current_job,
+                                    form_qa_exchanges,
+                                    pre_submit=False,
                                 )
                             application_submitted = True
                             break
                         else:
                             # Next/Review button
+                            # Guard immediately BEFORE clicking Next/Review
+                            await guard_page_account_safety(page, stage="execution_pre_step_click")
+
                             print(f"[LIVE] Clicking: '{btn_text}'")
                             await next_btn.click()
                             await asyncio.sleep(get_randomized_delay())
+
+                            # Guard form step navigation
+                            await guard_page_account_safety(page, stage="execution_form_step")
                     else:
                         labels = await visible_button_labels(modal)
                         label_text = ", ".join(labels) if labels else "none"
@@ -1815,6 +2006,19 @@ async def execution_node(state: JobApplyState) -> dict:
             print("❌ [LIVE] Application incomplete or failed.")
             return _failed_update(state, "Could not complete application flow", form_qa_exchanges)
 
+    except AccountSafetyBarrierError as safety_err:
+        try:
+            if page is not None and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
+        return _account_safety_execution_update(
+            state,
+            safety_err.detection,
+            current_job,
+            form_qa_exchanges,
+            pre_submit=not submission_attempted,
+        )
     except UserSkippedJob as exc:
         print(f"[LIVE] User skipped this job from Telegram while answering: '{exc.question}'")
         form_qa_exchanges.append(
@@ -1844,10 +2048,51 @@ async def execution_node(state: JobApplyState) -> dict:
             {"skip_question": exc.question},
         )
     except Exception as e:
+        if submission_attempted:
+            # Post-attempt exception: fail closed as ambiguous manual review with durable pause flag, never screenshot challenge pages
+            try:
+                if page is not None and not page.is_closed():
+                    safety_check = await inspect_page_account_safety(
+                        page, stage="execution_post_submit_error", fail_closed=True
+                    )
+                    await page.close()
+                    if safety_check.detected:
+                        return _account_safety_execution_update(
+                            state,
+                            safety_check,
+                            current_job,
+                            form_qa_exchanges,
+                            pre_submit=False,
+                        )
+            except Exception:
+                pass
+            ambiguous_detection = AccountSafetyDetection(
+                detected=True,
+                barrier_type=AccountSafetyBarrierType.INSPECTION_UNAVAILABLE,
+                reason=f"Ambiguous submission attempt error: {type(e).__name__}",
+                stage="execution_post_submit_exception",
+                url=sanitize_url_for_evidence(getattr(page, "url", "") if page else ""),
+                detected_at=datetime.now(timezone.utc).isoformat(),
+                resume_instructions=SAFE_RESUME_INSTRUCTIONS,
+            )
+            return _account_safety_execution_update(
+                state,
+                ambiguous_detection,
+                current_job,
+                form_qa_exchanges,
+                pre_submit=False,
+            )
+
         error_msg = f"Execution error for {current_job['title']}: {str(e)}"
         print(f"❌ [LIVE] Execution Error: {str(e)}")
         try:
             if page is not None and not page.is_closed():
+                safety_check = await inspect_page_account_safety(page, stage="execution_error")
+                if safety_check.detected:
+                    await page.close()
+                    return _account_safety_execution_update(
+                        state, safety_check, current_job, form_qa_exchanges, pre_submit=True
+                    )
                 await take_error_screenshot(
                     page, state.get("run_id", ""), f"exec_error_{current_job.get('job_id', '')}"
                 )

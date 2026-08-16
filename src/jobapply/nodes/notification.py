@@ -29,17 +29,55 @@ def format_session_summary(state: JobApplyState) -> str:
     manual = [item for item in outcomes if item.get("status") == "needs_manual_review"]
     failed = [item for item in outcomes if item.get("status") == "failed"]
 
+    from jobapply.utils.account_safety import (
+        normalize_safety_log_payload,
+        sanitize_evidence_string,
+    )
+
+    if state.get("account_safety_paused"):
+        norm = normalize_safety_log_payload(
+            run_id=str(state.get("run_id") or "unknown"),
+            barrier_type=str(state.get("account_safety_barrier_type") or "SECURITY BARRIER"),
+            stage=str(state.get("account_safety_stage") or "unknown"),
+            reason=str(state.get("account_safety_reason") or "Account safety challenge detected"),
+            url=str(state.get("account_safety_url") or "https://www.linkedin.com"),
+            resume_instructions=str(state.get("account_safety_resume_instructions") or ""),
+        )
+        run_id_str = norm["run_id"]
+    else:
+        norm = None
+        run_id_str = sanitize_evidence_string(str(state.get("run_id") or "unknown"), max_length=64)
+
     lines = [
         "📊 JOB APPLY SESSION SUMMARY",
-        f"Run ID: {state.get('run_id', 'unknown')}",
-        "",
-        "TOTALS",
-        f"✅ Confirmed submitted: {len(submitted)}",
-        f"🧪 Dry run only (not submitted): {len(dry_runs)}",
-        f"⏭ Skipped: {len(skipped)}",
-        f"⚠️ Needs manual review: {len(manual)}",
-        f"❌ Failed: {len(failed)}",
+        f"Run ID: {run_id_str}",
     ]
+
+    if norm:
+        lines.extend(
+            [
+                "",
+                "🛑 ACCOUNT SAFETY PAUSED — HUMAN ACTION REQUIRED",
+                f"Barrier Class: {norm['barrier_type']}",
+                f"Stage: {norm['stage']}",
+                f"URL: {norm['url']}",
+                f"Reason: {norm['reason']}",
+                f"Instructions: {norm['resume_instructions']}",
+                "⚠️ SECURITY NOTICE: Never share OTPs, 2FA codes, passwords, or CAPTCHA answers.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "TOTALS",
+            f"✅ Confirmed submitted: {len(submitted)}",
+            f"🧪 Dry run only (not submitted): {len(dry_runs)}",
+            f"⏭ Skipped: {len(skipped)}",
+            f"⚠️ Needs manual review: {len(manual)}",
+            f"❌ Failed: {len(failed)}",
+        ]
+    )
 
     if submitted:
         lines.extend(["", "CONFIRMED SUBMISSIONS"])
@@ -90,14 +128,27 @@ async def notification_node(state: JobApplyState) -> dict:
     """Send the final structured session summary."""
     message = format_session_summary(state)
     outcomes = list(state.get("application_outcomes") or [])
-    async with trace(
-        "telegram_send_summary",
-        run_type="tool",
-        metadata={
-            "submitted_count": sum(item.get("status") == "submitted" for item in outcomes),
-            "dry_run_count": sum(item.get("status") == "dry_run" for item in outcomes),
-            "run_id": state.get("run_id"),
-        },
-    ):
-        await TelegramClient().send_message(message)
-    return {"notification_sent": True}
+    try:
+        async with trace(
+            "telegram_send_summary",
+            run_type="tool",
+            metadata={
+                "submitted_count": sum(item.get("status") == "submitted" for item in outcomes),
+                "dry_run_count": sum(item.get("status") == "dry_run" for item in outcomes),
+                "run_id": state.get("run_id"),
+                "account_safety_paused": bool(state.get("account_safety_paused")),
+            },
+        ):
+            await TelegramClient().send_message(message)
+        return {"notification_sent": True}
+    except Exception as exc:
+        from jobapply.utils.account_safety import sanitize_evidence_string
+
+        err_str = sanitize_evidence_string(
+            f"Telegram summary notification failed: {type(exc).__name__}"
+        )
+        print(f"⚠️ {err_str}")
+        return {
+            "notification_sent": False,
+            "errors": list(state.get("errors") or []) + [err_str],
+        }

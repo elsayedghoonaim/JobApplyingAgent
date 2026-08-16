@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 
 from jobapply.main import run
 from jobapply.settings import get_settings
+from jobapply.utils.account_safety import (
+    classify_url,
+    inspect_page_account_safety,
+)
 from jobapply.utils.browser import managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.telegram import TelegramClient
@@ -23,6 +27,8 @@ SIGNIN_PATH_MARKERS = (
 
 def linkedin_url_is_signed_in(url: str) -> bool:
     """Return True for an authenticated LinkedIn page URL."""
+    if classify_url(url) is not None:
+        return False
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").lower()
     path = (parsed.path or "/").lower()
@@ -57,22 +63,37 @@ async def wait_for_linkedin_signin() -> None:
         page = await context.new_page()
         try:
             print("Opening Microsoft Edge and checking LinkedIn sign-in...")
-            await page.goto(
+            response = await page.goto(
                 f"{settings.linkedin_base_url.rstrip('/')}/feed/",
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
+            http_status = response.status if response else None
             await page.bring_to_front()
             loop = asyncio.get_running_loop()
             deadline = loop.time() + settings.linkedin_signin_timeout_seconds
             announced_wait = False
+            last_barrier_announced = None
             while not linkedin_url_is_signed_in(page.url):
                 if loop.time() >= deadline:
                     raise TimeoutError(
                         "LinkedIn sign-in timed out. Sign in to the visible JobApply Edge "
                         "window, then run the command again."
                     )
-                if not announced_wait:
+
+                # Check for explicit security challenges / verification barriers
+                safety = await inspect_page_account_safety(
+                    page, stage="preflight_signin", http_status=http_status, fail_closed=False
+                )
+                if safety.detected and safety.barrier_type != last_barrier_announced:
+                    btype = safety.barrier_type.value if safety.barrier_type else "barrier"
+                    print(
+                        f"🛑 [ACCOUNT SAFETY] LinkedIn requires manual intervention ({btype}): "
+                        f"{safety.reason}. Resolve in the visible Edge window..."
+                    )
+                    last_barrier_announced = safety.barrier_type
+
+                if not announced_wait and not safety.detected:
                     print(
                         "LinkedIn is not signed in. Complete sign-in in the visible Edge window..."
                     )

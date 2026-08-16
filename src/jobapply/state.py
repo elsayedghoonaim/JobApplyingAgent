@@ -42,6 +42,16 @@ class JobApplyState(TypedDict):
     # ── Notification ──
     notification_sent: bool
 
+    # ── Account safety ──
+    account_safety_paused: bool
+    account_safety_barrier_type: Optional[str]
+    account_safety_reason: Optional[str]
+    account_safety_stage: Optional[str]
+    account_safety_url: Optional[str]
+    account_safety_detected_at: Optional[str]
+    account_safety_evidence: Optional[str]
+    account_safety_resume_instructions: Optional[str]
+
     # ── Session tracking ──
     run_id: str  # also used as LangGraph thread_id
     dry_run: bool

@@ -15,6 +15,9 @@ async def select_next_job_node(state: JobApplyState) -> dict:
     Returns:
         State updates dict with current_job and current_job_index, or current_job=None if exhausted.
     """
+    if state.get("account_safety_paused"):
+        return {"current_job": None}
+
     max_jobs = state.get("max_jobs_to_evaluate")
     if max_jobs is not None and state.get("jobs_evaluated_count", 0) >= max_jobs:
         return {"current_job": None}
