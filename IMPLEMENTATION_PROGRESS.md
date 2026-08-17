@@ -7,8 +7,8 @@
 | 2. Paths, redaction, PDF hardening, and Edge isolation | Reviewed + committed | `d9fdf1e` |
 | 3. Account-safety pause behavior | Reviewed + committed | `2a3d571` |
 | 4. Search completeness and persisted filtering | Reviewed + committed | `e76895a` |
-| 5. Idempotent attempts and atomic quotas | Reviewed; ready to commit | This task commit |
-| 6. Telegram recovery and durable notifications | Queued | — |
+| 5. Idempotent attempts and atomic quotas | Reviewed + committed | `fed25d8` |
+| 6. Telegram recovery and durable notifications | Reviewed + ready to commit | — |
 | 7. Execution decomposition and fixture tests | Queued | — |
 | 8. LLM/database/browser performance | Queued | — |
 | 9. Structured observability and summaries | Queued | — |
@@ -29,6 +29,8 @@
 - Task 4 independent gates: lock check passes, Ruff format/lint pass, Pyright reports 0 issues, pytest reports 208 passed under the strict-offline harness, focused 32-card traversal completes in about 1.6 seconds with mocked delays, build and diff checks pass, and no real browser/LinkedIn verification was performed.
 - Task 5 accepted after seven reviewer-directed Gemini 3.7 Mid corrections: exact-token application attempts transition through quota reservation and durable submission-unknown state, daily/session quotas reserve atomically and idempotently, pre-click failures release exact ownership without stranding capacity, confirmed submissions remain authoritative through secondary failures, and duplicate/resumed workers cannot create a second outcome or counter increment.
 - Task 5 independent gates: lock check and sync pass, Ruff format/lint pass, Pyright reports 0 issues, 10 focused attempt/quota tests pass, 217 remaining project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under the normal strict-offline policy, build and diff checks pass, and no real browser/LinkedIn verification was performed.
+- Task 6 accepted after eight reviewer-directed Gemini 3.7 Mid corrections: approval and form-question prompts use durable deterministic correlations with exact waiter/poll leases and reply-before-cursor persistence; ambiguous prompt delivery fails closed without automatic resend; notification summaries and application receipts use a chunked idempotent outbox with exact transition checks, bounded retry, and delivery-unknown reconciliation; sensitive security challenges are refused; and storage failures route execution to safe base/manual review rather than fabricating user timeouts or delivery counts.
+- Task 6 independent gates: lock check and sync pass, Ruff format/lint pass across 56 files, Pyright reports 0 issues, 32 focused Telegram recovery/outbox tests pass, 118 affected node/workflow tests pass, 249 project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under the normal strict-offline policy, sdist and wheel builds succeed, and no real Telegram or LinkedIn verification was performed.
 
 ## Needs Your Eyes
 

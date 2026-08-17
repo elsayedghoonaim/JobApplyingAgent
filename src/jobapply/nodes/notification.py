@@ -2,6 +2,7 @@
 
 from langsmith.run_helpers import trace
 
+from jobapply.models.telegram import OutboxStatus
 from jobapply.state import JobApplyState
 from jobapply.utils.telegram import TelegramClient
 
@@ -131,9 +132,14 @@ def format_session_summary(state: JobApplyState) -> str:
 
 
 async def notification_node(state: JobApplyState) -> dict:
-    """Send the final structured session summary."""
+    """Send the final structured session summary via durable outbox."""
     message = format_session_summary(state)
     outcomes = list(state.get("application_outcomes") or [])
+    run_id = str(state.get("run_id") or "default_run")
+    idempotency_key = f"summary:{run_id}"
+
+    telegram = TelegramClient()
+
     try:
         async with trace(
             "telegram_send_summary",
@@ -141,17 +147,43 @@ async def notification_node(state: JobApplyState) -> dict:
             metadata={
                 "submitted_count": sum(item.get("status") == "submitted" for item in outcomes),
                 "dry_run_count": sum(item.get("status") == "dry_run" for item in outcomes),
-                "run_id": state.get("run_id"),
+                "run_id": run_id,
                 "account_safety_paused": bool(state.get("account_safety_paused")),
             },
         ):
-            await TelegramClient().send_message(message)
-        return {"notification_sent": True}
+            result = await telegram.enqueue_and_deliver(
+                idempotency_key=idempotency_key,
+                notification_type="session_summary",
+                run_id=run_id,
+                text=message,
+                metadata={"account_safety_paused": bool(state.get("account_safety_paused"))},
+            )
+
+            (
+                pending_count,
+                unknown_count,
+            ) = await telegram.outbox_repo.get_pending_and_unknown_counts()
+
+            if result.success and result.status == OutboxStatus.SENT:
+                return {
+                    "notification_sent": True,
+                    "outbox_pending_count": pending_count,
+                    "outbox_unknown_count": unknown_count,
+                }
+            else:
+                err_str = f"Summary notification queued/retryable ({result.status.value}): {result.reason or 'delivery not confirmed'}"
+                return {
+                    "notification_sent": False,
+                    "outbox_pending_count": pending_count,
+                    "outbox_unknown_count": unknown_count,
+                    "errors": list(state.get("errors") or []) + [err_str],
+                }
+
     except Exception as exc:
         from jobapply.utils.account_safety import sanitize_evidence_string
 
         err_str = sanitize_evidence_string(
-            f"Telegram summary notification failed: {type(exc).__name__}"
+            f"Telegram summary notification persistence failure: {type(exc).__name__}"
         )
         print(f"⚠️ {err_str}")
         return {

@@ -2,10 +2,11 @@
 
 import os
 from typing import Any
-from uuid import uuid4
 
+from jobapply.models.telegram import CorrelationStatus, CorrelationWaitResult
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
+from jobapply.utils.dedup import canonicalize_job_id
 from jobapply.utils.llm import get_llm
 from jobapply.utils.paths import get_edited_resume_path
 from jobapply.utils.pdf import markdown_to_pdf
@@ -20,27 +21,19 @@ def _data_path(*parts: str) -> str:
 
 
 async def approval_node(state: JobApplyState) -> dict:
-    """Ask user via Telegram for approval of urgent resume edits.
-
-    This is the rare path, only triggered when edits_urgent=True.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        State updates dict.
-    """
+    """Ask user via Telegram for approval of urgent resume edits."""
     settings = get_settings()
     telegram = TelegramClient()
 
-    nonce = str(uuid4())[:8]
-
     current_job = state.get("current_job") or {}
     qual_result = state.get("qualification_result") or {}
+    run_id = str(state.get("run_id") or "default_run")
+    canonical_job_id = canonicalize_job_id(current_job.get("job_id", "unknown")) or "unknown"
+    corr_key = f"approval:{run_id}:{canonical_job_id}"
 
-    message = f"""🔴 **Urgent Edit Recommended** `[{nonce}]`
+    raw_message = f"""🔴 **Urgent Edit Recommended**
  
-**Job:** {current_job["title"]} at {current_job["company"]}
+**Job:** {current_job.get("title", "Unknown")} at {current_job.get("company", "Unknown")}
 **Score:** {qual_result.get("score", 0.0):.2f}
 
 **Why:** {state.get("edit_reasoning", "No reasoning provided")}
@@ -48,23 +41,41 @@ async def approval_node(state: JobApplyState) -> dict:
 **Proposed changes:**
 {state.get("proposed_edits", "No changes proposed")}
 
-Reply with `{nonce}` followed by:
+Reply followed by:
 ✅ **approve** — use edited resume
 📄 **base** — use original resume as-is
 ❌ **skip** — skip this job
 """
 
-    prompt_message_id = await telegram.send_message(message)
+    errors = list(state.get("errors") or [])
+    try:
+        wait_res = await telegram.send_and_wait_for_reply(
+            correlation_key=corr_key,
+            purpose="approval",
+            run_id=run_id,
+            prompt_text=raw_message,
+            timeout=settings.approval_timeout_seconds,
+            job_id=canonical_job_id,
+        )
+    except Exception as exc:
+        wait_res = CorrelationWaitResult(
+            status=CorrelationStatus.STORAGE_ERROR,
+            error_reason=f"Approval execution exception ({type(exc).__name__})",
+        )
 
-    reply = await telegram.wait_for_correlated_reply(
-        nonce=nonce,
-        timeout=settings.approval_timeout_seconds,
-        reply_to_message_id=prompt_message_id,
-    )
+    if wait_res.status == CorrelationStatus.REPLIED and wait_res.reply_text:
+        reply = wait_res.reply_text
+    elif wait_res.status == CorrelationStatus.TIMED_OUT:
+        reply = None
+    else:
+        reply = None
+        errors.append(
+            f"Telegram approval correlation failed ({wait_res.status.value}): {wait_res.error_reason or 'storage_or_delivery_error'}"
+        )
+    active_nonce = wait_res.nonce or ""
 
     # Parse reply
     if reply is None:
-        # Timeout - default to safe option
         approval_status = "use_base"
     elif "approve" in reply.lower() or "✅" in reply:
         approval_status = "approved"
@@ -73,22 +84,23 @@ Reply with `{nonce}` followed by:
     elif "skip" in reply.lower() or "❌" in reply:
         approval_status = "skip"
     else:
-        # Unrecognized - default to safe
         approval_status = "use_base"
 
     updates: dict[str, Any] = {
         "approval_status": approval_status,
-        "approval_nonce": nonce,
+        "approval_nonce": active_nonce,
     }
+    if errors:
+        updates["errors"] = errors
 
     if approval_status == "skip":
         skipped_jobs = list(state.get("skipped_jobs") or [])
         outcomes = list(state.get("application_outcomes") or [])
 
         outcome = {
-            "job_id": current_job["job_id"],
-            "title": current_job["title"],
-            "company": current_job["company"],
+            "job_id": current_job.get("job_id", "unknown"),
+            "title": current_job.get("title", "Unknown"),
+            "company": current_job.get("company", "Unknown"),
             "url": current_job.get("url"),
             "score": qual_result.get("score", 0.0),
             "status": "skipped",
@@ -106,21 +118,19 @@ Reply with `{nonce}` followed by:
         updates["application_status"] = "skipped"
 
     elif approval_status == "approved":
-        # Generate the edited resume
         resume_markdown = ""
         try:
             with open(_data_path("resume.md"), "r", encoding="utf-8") as f:
                 resume_markdown = f.read()
         except Exception as e:
-            updates["errors"] = list(state.get("errors") or []) + [
+            updates["errors"] = list(updates.get("errors") or state.get("errors") or []) + [
                 f"Failed to load resume.md for editing: {redact_string(str(e))}"
             ]
 
         proposed_edits = state.get("proposed_edits")
         if resume_markdown and proposed_edits:
-            run_id = state.get("run_id", "default_run")
-            job_id = str(current_job.get("job_id", "unknown"))
-            edited_pdf_path = str(get_edited_resume_path(run_id=run_id, job_id=job_id))
+            job_id_str = str(current_job.get("job_id", "unknown"))
+            edited_pdf_path = str(get_edited_resume_path(run_id=run_id, job_id=job_id_str))
 
             try:
                 llm = get_llm(temperature=0.2, max_output_tokens=2048)
@@ -137,14 +147,13 @@ Reply with `{nonce}` followed by:
                 else:
                     raise RuntimeError("PDF file was not created on disk")
             except Exception as e:
-                updates["errors"] = list(state.get("errors") or []) + [
+                updates["errors"] = list(updates.get("errors") or state.get("errors") or []) + [
                     f"Resume editing/PDF generation failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
                 ]
                 updates["resume_edited"] = False
         else:
             updates["resume_edited"] = False
     else:
-        # use_base
         updates["resume_edited"] = False
 
     return updates

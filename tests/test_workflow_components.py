@@ -10,6 +10,12 @@ from jobapply.graph import route_after_generation, route_start
 from jobapply.live import linkedin_url_is_signed_in, run_live
 from jobapply.main import resolve_graph_input
 from jobapply.models.job import QualificationResult
+from jobapply.models.telegram import (
+    CorrelationStatus,
+    CorrelationWaitResult,
+    OutboxDeliveryResult,
+    OutboxStatus,
+)
 from jobapply.nodes.execution import (
     STANDARD_TEXT_FIELD_SELECTOR,
     UserSkippedJob,
@@ -444,8 +450,9 @@ async def test_gemma_extracts_form_value_from_natural_reply(mock_get_llm):
 async def test_telegram_question_message_contains_question_options_and_skip(mock_translate):
     mock_translate.return_value = ("Are you willing to relocate?", ["Yes", "No"])
     telegram = AsyncMock()
-    telegram.send_message.return_value = 77
-    telegram.wait_for_correlated_reply.return_value = None
+    telegram.send_and_wait_for_reply.return_value = CorrelationWaitResult(
+        status=CorrelationStatus.TIMED_OUT, timed_out=True
+    )
     settings = SimpleNamespace(
         form_qa_timeout_seconds=30,
         telegram_question_language="English",
@@ -457,8 +464,10 @@ async def test_telegram_question_message_contains_question_options_and_skip(mock
         settings,
         options=["Yes", "No"],
     )
-    telegram.send_message.assert_awaited_once_with(
-        "Are you willing to relocate?\n\n- Yes\n- No\n\n- /skip — Skip this job"
+    telegram.send_and_wait_for_reply.assert_awaited_once()
+    assert (
+        telegram.send_and_wait_for_reply.call_args.kwargs["prompt_text"]
+        == "Are you willing to relocate?\n\n- Yes\n- No\n\n- /skip — Skip this job"
     )
 
 
@@ -493,8 +502,9 @@ def test_job_question_summary_contains_context_before_questions():
 async def test_explicit_skip_reply_stops_question_processing(mock_translate):
     mock_translate.return_value = ("Are you willing to relocate?", ["Yes", "No"])
     telegram = AsyncMock()
-    telegram.send_message.return_value = 77
-    telegram.wait_for_correlated_reply.return_value = "/skip"
+    telegram.send_and_wait_for_reply.return_value = CorrelationWaitResult(
+        status=CorrelationStatus.REPLIED, reply_text="/skip"
+    )
     settings = SimpleNamespace(
         form_qa_timeout_seconds=30,
         telegram_question_language="English",
@@ -858,6 +868,11 @@ async def test_qualification_failure_still_consumes_job_limit(mock_get_llm, mock
 @patch("jobapply.nodes.notification.TelegramClient")
 async def test_notification_stage_in_isolation(mock_telegram_class):
     telegram = AsyncMock()
+    telegram.enqueue_and_deliver.return_value = OutboxDeliveryResult(
+        success=True, status=OutboxStatus.SENT, idempotency_key="summary:summary-test"
+    )
+    telegram.outbox_repo = AsyncMock()
+    telegram.outbox_repo.get_pending_and_unknown_counts.return_value = (0, 0)
     mock_telegram_class.return_value = telegram
     state = _base_state(
         run_id="summary-test",
@@ -874,8 +889,12 @@ async def test_notification_stage_in_isolation(mock_telegram_class):
         ],
     )
     result = await notification_node(state)
-    assert result == {"notification_sent": True}
-    telegram.send_message.assert_awaited_once()
+    assert result == {
+        "notification_sent": True,
+        "outbox_pending_count": 0,
+        "outbox_unknown_count": 0,
+    }
+    telegram.enqueue_and_deliver.assert_awaited_once()
 
 
 @pytest.mark.asyncio

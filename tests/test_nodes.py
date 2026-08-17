@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jobapply.models.telegram import CorrelationStatus, CorrelationWaitResult
 from jobapply.nodes.approval import approval_node
 from jobapply.nodes.execution import execution_node
 
@@ -10,7 +11,9 @@ from jobapply.nodes.execution import execution_node
 @patch("jobapply.nodes.approval.TelegramClient")
 async def test_approval_node_skip(mock_telegram_class):
     mock_telegram = AsyncMock()
-    mock_telegram.wait_for_correlated_reply.return_value = "skip"
+    mock_telegram.send_and_wait_for_reply.return_value = CorrelationWaitResult(
+        status=CorrelationStatus.REPLIED, reply_text="skip", nonce="n1"
+    )
     mock_telegram_class.return_value = mock_telegram
 
     state = {
@@ -31,7 +34,9 @@ async def test_approval_node_skip(mock_telegram_class):
 @patch("jobapply.nodes.approval.TelegramClient")
 async def test_approval_node_use_base_on_timeout(mock_telegram_class):
     mock_telegram = AsyncMock()
-    mock_telegram.wait_for_correlated_reply.return_value = None  # Timeout
+    mock_telegram.send_and_wait_for_reply.return_value = CorrelationWaitResult(
+        status=CorrelationStatus.TIMED_OUT, timed_out=True, nonce="n1"
+    )
     mock_telegram_class.return_value = mock_telegram
 
     state = {
@@ -54,7 +59,9 @@ async def test_approval_node_approve(
     mock_exists, mock_open, mock_markdown_to_pdf, mock_get_llm, mock_telegram_class
 ):
     mock_telegram = AsyncMock()
-    mock_telegram.wait_for_correlated_reply.return_value = "approve"
+    mock_telegram.send_and_wait_for_reply.return_value = CorrelationWaitResult(
+        status=CorrelationStatus.REPLIED, reply_text="approve", nonce="n1"
+    )
     mock_telegram_class.return_value = mock_telegram
 
     # Mock original resume markdown

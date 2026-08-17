@@ -455,8 +455,14 @@ class DeduplicationStore:
             cls._index_error = None
         try:
             from jobapply.utils.attempts import AttemptRepository, QuotaRepository
+            from jobapply.utils.telegram_storage import (
+                NotificationOutboxRepository,
+                TelegramRepository,
+            )
 
             await AttemptRepository.close()
             await QuotaRepository.close()
+            await TelegramRepository.close()
+            await NotificationOutboxRepository.close()
         except Exception:
             pass

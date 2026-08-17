@@ -1067,7 +1067,7 @@ def test_format_session_summary_redacts_and_preserves_safety_instructions():
 @patch("jobapply.nodes.notification.TelegramClient")
 async def test_notification_node_handles_telegram_failure_without_unpausing(mock_telegram_class):
     mock_telegram = AsyncMock()
-    mock_telegram.send_message.side_effect = RuntimeError("Network unreachable")
+    mock_telegram.enqueue_and_deliver.side_effect = RuntimeError("Network unreachable")
     mock_telegram_class.return_value = mock_telegram
 
     state = {
@@ -1081,9 +1081,12 @@ async def test_notification_node_handles_telegram_failure_without_unpausing(mock
     update = await notification_node(state)
 
     assert update["notification_sent"] is False
-    assert any("Telegram summary notification failed" in err for err in update["errors"])
+    assert any(
+        "Telegram summary notification persistence failure" in err for err in update["errors"]
+    )
     # The pause in state must remain unmutated / intact
     assert state["account_safety_paused"] is True
+    assert "account_safety_paused" not in update
 
 
 def test_format_account_safety_notification():

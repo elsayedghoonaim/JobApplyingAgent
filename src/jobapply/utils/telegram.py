@@ -1,13 +1,27 @@
-"""Telegram client with checked delivery and correlated replies."""
+"""Telegram client with checked delivery, durable correlated replies, and outbox recovery."""
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from langsmith.run_helpers import trace
 
+from jobapply.models.telegram import (
+    CorrelationStatus,
+    CorrelationWaitResult,
+    OutboxDeliveryResult,
+    OutboxDrainResult,
+    OutboxStatus,
+)
 from jobapply.settings import get_settings
 from jobapply.utils.redaction import redact_string
+from jobapply.utils.telegram_storage import (
+    NotificationOutboxRepository,
+    TelegramApiDefiniteRejectError,
+    TelegramRepository,
+    TelegramTransportAmbiguousError,
+    make_bot_chat_key,
+)
 from jobapply.utils.tracing import get_telegram_metadata
 
 
@@ -17,33 +31,75 @@ def correlated_reply_text(
     nonce: str,
     reply_to_message_id: int | None,
 ) -> str | None:
-    """Return text for a new same-chat message or explicit correlated reply."""
+    """Return text for a new same-chat message or explicit correlated reply.
+
+    Rejects stale messages older than the prompt, cross-prompt replies, and mismatched chat IDs.
+    """
     chat_id = str(message.get("chat", {}).get("id", ""))
-    text = message.get("text", "")
+    if chat_id != str(configured_chat_id):
+        return None
+
+    text = str(message.get("text") or "")
+    if not text:
+        return None
+
+    msg_id = message.get("message_id")
     replied_to = message.get("reply_to_message", {}).get("message_id")
-    is_direct_reply = reply_to_message_id is not None and replied_to == reply_to_message_id
-    is_new_chat_message = (
-        reply_to_message_id is not None
-        and isinstance(message.get("message_id"), int)
-        and message["message_id"] > reply_to_message_id
-    )
-    has_nonce = nonce in text
+
+    # Stale message check: message older than or equal to prompt cannot correlate
     if (
-        chat_id != str(configured_chat_id)
-        or not text
-        or not (is_direct_reply or is_new_chat_message or has_nonce)
+        reply_to_message_id is not None
+        and isinstance(msg_id, int)
+        and msg_id <= reply_to_message_id
     ):
         return None
-    return text.replace(nonce, "").strip(" []:-") if has_nonce else text.strip()
+
+    is_direct_reply = reply_to_message_id is not None and replied_to == reply_to_message_id
+
+    # If replying to a different message (not our prompt), do not bind to avoid collision
+    if (
+        replied_to is not None
+        and reply_to_message_id is not None
+        and replied_to != reply_to_message_id
+    ):
+        return None
+
+    is_new_chat_message = (
+        reply_to_message_id is not None and isinstance(msg_id, int) and msg_id > reply_to_message_id
+    )
+    has_nonce = bool(nonce and nonce in text)
+
+    # Standalone nonce check when prompt_message_id is not set
+    if reply_to_message_id is None:
+        if not has_nonce:
+            return None
+        return text.replace(nonce, "").strip(" []:-")
+
+    if is_direct_reply:
+        return text.replace(nonce, "").strip(" []:-") if has_nonce else text.strip()
+
+    if is_new_chat_message:
+        if has_nonce:
+            return text.replace(nonce, "").strip(" []:-")
+        if replied_to is None:
+            # Plain next message under single active waiter
+            return text.strip()
+
+    return None
 
 
 class TelegramClient:
-    """Small Telegram Bot API client."""
+    """Telegram Bot API client with durable cursors, correlations, and outbox."""
 
     def __init__(self):
         self.settings = get_settings()
         self._last_update_id: int | None = None
         self._base_url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}"
+        self.telegram_repo = TelegramRepository()
+        self.outbox_repo = NotificationOutboxRepository()
+        self.bot_chat_key = make_bot_chat_key(
+            self.settings.telegram_bot_token, self.settings.telegram_chat_id
+        )
 
     async def send_message(self, text: str, parse_mode: str | None = None) -> int | None:
         """Send checked messages and return the last Telegram message ID."""
@@ -52,7 +108,7 @@ class TelegramClient:
             run_type="tool",
             metadata={"message_length": len(text), "parse_mode": parse_mode or "plain"},
         ) as run_tree:
-            chunks = [text[index : index + 4096] for index in range(0, len(text), 4096)] or [""]
+            chunks = [text[index : index + 4000] for index in range(0, len(text), 4000)] or [""]
             message_id = None
             for chunk in chunks:
                 message_id = await self._send_single_message(chunk, parse_mode)
@@ -78,11 +134,29 @@ class TelegramClient:
                         str(data.get("description", "unknown error")),
                         extra_secrets=[token],
                     )
-                    raise RuntimeError(f"Telegram sendMessage failed: {desc}")
+                    error_code = data.get("error_code")
+                    if isinstance(error_code, int) and 400 <= error_code < 500:
+                        raise TelegramApiDefiniteRejectError(
+                            f"Telegram sendMessage rejected: {desc}"
+                        )
+                    raise TelegramTransportAmbiguousError(f"Telegram sendMessage error: {desc}")
                 return data.get("result", {}).get("message_id")
+        except httpx.HTTPStatusError as http_err:
+            sanitized = redact_string(str(http_err), extra_secrets=[token])
+            if http_err.response is not None and 400 <= http_err.response.status_code < 500:
+                raise TelegramApiDefiniteRejectError(
+                    f"Telegram sendMessage client error: {sanitized}"
+                ) from None
+            raise TelegramTransportAmbiguousError(
+                f"Telegram sendMessage transport error: {sanitized}"
+            ) from None
+        except TelegramApiDefiniteRejectError:
+            raise
         except Exception as exc:
             sanitized = redact_string(str(exc), extra_secrets=[token])
-            raise RuntimeError(f"Telegram sendMessage error: {sanitized}") from None
+            raise TelegramTransportAmbiguousError(
+                f"Telegram sendMessage transport error: {sanitized}"
+            ) from None
 
     async def wait_for_correlated_reply(
         self,
@@ -90,20 +164,41 @@ class TelegramClient:
         timeout: int = 300,
         reply_to_message_id: int | None = None,
     ) -> Optional[str]:
-        """Wait for a direct Telegram reply, with ``nonce`` as a fallback."""
+        """Wait for a direct Telegram reply with durable cursor progression and periodic lease renewal."""
         async with trace(
             "telegram_wait_for_reply",
             run_type="tool",
             metadata=get_telegram_metadata(nonce=nonce, timeout=timeout),
         ) as run_tree:
+            durable_cursor = await self.telegram_repo.get_cursor(self.bot_chat_key)
+            if durable_cursor is not None:
+                self._last_update_id = max(self._last_update_id or 0, durable_cursor)
+
+            lease_duration = max(timeout + 30, self.settings.telegram_poll_lease_seconds)
+            poll_lease = await self.telegram_repo.claim_poll_lease(
+                self.bot_chat_key, lease_duration_seconds=lease_duration
+            )
+            if not poll_lease:
+                return None
+
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout
             token = self.settings.telegram_bot_token
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
                     while loop.time() < deadline:
+                        # Renew poll lease on each iteration
+                        renewed = await self.telegram_repo.renew_poll_lease(
+                            self.bot_chat_key, poll_lease, lease_duration_seconds=lease_duration
+                        )
+                        if not renewed:
+                            await self.telegram_repo.release_poll_lease(
+                                self.bot_chat_key, poll_lease
+                            )
+                            return None
+
                         poll_timeout = max(1, min(5, int(deadline - loop.time())))
-                        offset = -1 if self._last_update_id is None else self._last_update_id + 1
+                        offset = 0 if self._last_update_id is None else self._last_update_id + 1
                         response = await client.post(
                             f"{self._base_url}/getUpdates",
                             json={"offset": offset, "timeout": poll_timeout},
@@ -117,10 +212,13 @@ class TelegramClient:
                             )
                             raise RuntimeError(f"Telegram getUpdates failed: {desc}")
                         for update in data.get("result", []):
-                            self._last_update_id = max(
-                                self._last_update_id or 0,
-                                update["update_id"],
+                            up_id = update.get("update_id", 0)
+                            saved = await self.telegram_repo.save_cursor(
+                                self.bot_chat_key, up_id, lease_id=poll_lease
                             )
+                            if saved:
+                                self._last_update_id = max(self._last_update_id or 0, up_id)
+
                             reply = correlated_reply_text(
                                 update.get("message", {}),
                                 self.settings.telegram_chat_id,
@@ -128,6 +226,9 @@ class TelegramClient:
                                 reply_to_message_id,
                             )
                             if reply is not None:
+                                await self.telegram_repo.release_poll_lease(
+                                    self.bot_chat_key, poll_lease
+                                )
                                 if run_tree:
                                     run_tree.metadata.update(
                                         get_telegram_metadata(
@@ -136,11 +237,491 @@ class TelegramClient:
                                     )
                                 return reply
             except Exception as exc:
+                await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
                 sanitized = redact_string(str(exc), extra_secrets=[token])
                 raise RuntimeError(f"Telegram getUpdates error: {sanitized}") from None
 
+            await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
             if run_tree:
                 run_tree.metadata.update(
                     get_telegram_metadata(nonce=nonce, timeout=timeout, timed_out=True)
                 )
             return None
+
+    async def send_and_wait_for_reply(
+        self,
+        correlation_key: str,
+        purpose: str,
+        run_id: str,
+        prompt_text: str,
+        timeout: int = 300,
+        job_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> CorrelationWaitResult:
+        """Durable, restart-safe prompt sending and correlated reply waiting with lease renewal."""
+        # 1. Register correlation intent in MongoDB
+        try:
+            reg = await self.telegram_repo.register_intent(
+                correlation_key=correlation_key,
+                purpose=purpose,
+                run_id=run_id,
+                prompt_text=prompt_text,
+                job_id=job_id,
+                metadata=metadata,
+            )
+        except Exception as reg_exc:
+            return CorrelationWaitResult(
+                status=CorrelationStatus.STORAGE_ERROR,
+                error_reason=f"Failed to register intent: {type(reg_exc).__name__}",
+            )
+
+        if not reg.registered:
+            return CorrelationWaitResult(
+                status=CorrelationStatus.STORAGE_ERROR,
+                error_reason=reg.reason or "registration_rejected",
+                nonce=reg.nonce,
+            )
+
+        # 2. Check terminal / cached states
+        if reg.status == CorrelationStatus.CONSUMED:
+            return CorrelationWaitResult(
+                status=CorrelationStatus.CONSUMED,
+                nonce=reg.nonce,
+            )
+        if reg.status == CorrelationStatus.TIMED_OUT:
+            return CorrelationWaitResult(
+                status=CorrelationStatus.TIMED_OUT,
+                timed_out=True,
+                nonce=reg.nonce,
+            )
+        if reg.status == CorrelationStatus.PROMPT_DELIVERY_UNKNOWN:
+            return CorrelationWaitResult(
+                status=CorrelationStatus.PROMPT_DELIVERY_UNKNOWN,
+                error_reason="prompt_delivery_unknown",
+                nonce=reg.nonce,
+            )
+        if reg.status == CorrelationStatus.PROMPT_FAILED:
+            return CorrelationWaitResult(
+                status=CorrelationStatus.PROMPT_FAILED,
+                error_reason="prompt_previously_rejected",
+                nonce=reg.nonce,
+            )
+
+        # 3. Check if already replied
+        if reg.status == CorrelationStatus.REPLIED and reg.reply_text is not None:
+            lease = await self.telegram_repo.claim_waiter(
+                correlation_key, lease_duration_seconds=30
+            )
+            if lease.acquired and lease.lease_id:
+                consume_res = await self.telegram_repo.consume_reply(
+                    correlation_key, lease.lease_id
+                )
+                if consume_res.consumed:
+                    return CorrelationWaitResult(
+                        status=CorrelationStatus.REPLIED,
+                        reply_text=consume_res.reply_text,
+                        nonce=reg.nonce,
+                    )
+
+        # 4. Acquire waiter lease AND bot/chat polling lease BEFORE sending any new prompt
+        lease_duration = max(timeout + 30, self.settings.telegram_poll_lease_seconds)
+        waiter_lease = await self.telegram_repo.claim_waiter(
+            correlation_key, lease_duration_seconds=lease_duration
+        )
+        if not waiter_lease.acquired or not waiter_lease.lease_id:
+            return CorrelationWaitResult(
+                status=waiter_lease.status,
+                error_reason=waiter_lease.reason or "cannot_acquire_waiter_lease",
+                nonce=reg.nonce,
+            )
+
+        poll_lease = await self.telegram_repo.claim_poll_lease(
+            self.bot_chat_key, lease_duration_seconds=lease_duration
+        )
+        if not poll_lease:
+            await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+            return CorrelationWaitResult(
+                status=CorrelationStatus.STORAGE_ERROR,
+                error_reason="concurrent_bot_poller_active",
+                nonce=reg.nonce,
+            )
+
+        # 5. Check if prompt already sent; if not, mark in-flight and dispatch
+        if reg.prompt_message_id is not None:
+            prompt_message_id = reg.prompt_message_id
+        else:
+            in_flight_marked = await self.telegram_repo.mark_prompt_in_flight(
+                correlation_key, waiter_lease.lease_id
+            )
+            if not in_flight_marked:
+                await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+                await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+                return CorrelationWaitResult(
+                    status=CorrelationStatus.STORAGE_ERROR,
+                    error_reason="cannot_mark_prompt_in_flight",
+                    nonce=reg.nonce,
+                )
+
+            try:
+                sent_id = await self.send_message(reg.prompt_text)
+                if sent_id is None:
+                    raise TelegramTransportAmbiguousError("sendMessage returned None message_id")
+            except TelegramApiDefiniteRejectError as reject_err:
+                failed_marked = await self.telegram_repo.mark_prompt_failed(
+                    correlation_key,
+                    f"DefiniteReject ({type(reject_err).__name__})",
+                    waiter_lease.lease_id,
+                )
+                await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+                await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+                return CorrelationWaitResult(
+                    status=CorrelationStatus.PROMPT_FAILED
+                    if failed_marked
+                    else CorrelationStatus.STORAGE_ERROR,
+                    error_reason="prompt_rejected_by_api",
+                    nonce=reg.nonce,
+                )
+            except Exception as send_err:
+                unk_marked = await self.telegram_repo.mark_prompt_delivery_unknown(
+                    correlation_key,
+                    f"AmbiguousSend ({type(send_err).__name__})",
+                    waiter_lease.lease_id,
+                )
+                await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+                await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+                return CorrelationWaitResult(
+                    status=CorrelationStatus.PROMPT_DELIVERY_UNKNOWN
+                    if unk_marked
+                    else CorrelationStatus.STORAGE_ERROR,
+                    error_reason="prompt_delivery_unknown",
+                    nonce=reg.nonce,
+                )
+
+            recorded = await self.telegram_repo.record_prompt_sent(
+                correlation_key, sent_id, waiter_lease.lease_id
+            )
+            if not recorded:
+                unk_marked = await self.telegram_repo.mark_prompt_delivery_unknown(
+                    correlation_key,
+                    "record_prompt_sent_failed",
+                    waiter_lease.lease_id,
+                )
+                await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+                await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+                return CorrelationWaitResult(
+                    status=CorrelationStatus.PROMPT_DELIVERY_UNKNOWN
+                    if unk_marked
+                    else CorrelationStatus.STORAGE_ERROR,
+                    error_reason="prompt_delivery_unknown_after_send",
+                    nonce=reg.nonce,
+                )
+            prompt_message_id = sent_id
+
+        # 6. Polling loop with exact reply-before-cursor ordering and lease renewals
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        token = self.settings.telegram_bot_token
+        try:
+            durable_cursor = await self.telegram_repo.get_cursor(self.bot_chat_key)
+        except Exception:
+            await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+            await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+            return CorrelationWaitResult(
+                status=CorrelationStatus.STORAGE_ERROR,
+                error_reason="cursor_read_failed",
+                nonce=reg.nonce,
+            )
+
+        if durable_cursor is not None:
+            self._last_update_id = max(self._last_update_id or 0, durable_cursor)
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+                while loop.time() < deadline:
+                    # Renew poll lease periodically
+                    poll_renewed = await self.telegram_repo.renew_poll_lease(
+                        self.bot_chat_key, poll_lease, lease_duration_seconds=lease_duration
+                    )
+                    if not poll_renewed:
+                        await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+                        await self.telegram_repo.release_waiter(
+                            correlation_key, waiter_lease.lease_id
+                        )
+                        return CorrelationWaitResult(
+                            status=CorrelationStatus.STORAGE_ERROR,
+                            error_reason="poll_lease_renewal_failed",
+                            nonce=reg.nonce,
+                        )
+
+                    poll_timeout = max(1, min(5, int(deadline - loop.time())))
+                    offset = 0 if self._last_update_id is None else self._last_update_id + 1
+                    response = await client.post(
+                        f"{self._base_url}/getUpdates",
+                        json={"offset": offset, "timeout": poll_timeout},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if not data.get("ok"):
+                        desc = redact_string(
+                            str(data.get("description", "unknown error")),
+                            extra_secrets=[token],
+                        )
+                        raise RuntimeError(f"Telegram getUpdates failed: {desc}")
+
+                    for update in data.get("result", []):
+                        up_id = update.get("update_id", 0)
+                        msg = update.get("message", {})
+                        reply = correlated_reply_text(
+                            msg,
+                            self.settings.telegram_chat_id,
+                            reg.nonce,
+                            prompt_message_id,
+                        )
+
+                        if reply is not None:
+                            msg_id = msg.get("message_id", 0)
+                            rec_res = await self.telegram_repo.record_reply(
+                                correlation_key,
+                                reply,
+                                up_id,
+                                msg_id,
+                                waiter_lease.lease_id,
+                            )
+                            if rec_res.accepted:
+                                # Save cursor under exact poll lease
+                                cursor_saved = await self.telegram_repo.save_cursor(
+                                    self.bot_chat_key, up_id, poll_lease
+                                )
+                                if not cursor_saved:
+                                    await self.telegram_repo.release_poll_lease(
+                                        self.bot_chat_key, poll_lease
+                                    )
+                                    await self.telegram_repo.release_waiter(
+                                        correlation_key, waiter_lease.lease_id
+                                    )
+                                    return CorrelationWaitResult(
+                                        status=CorrelationStatus.STORAGE_ERROR,
+                                        error_reason="cursor_save_failed",
+                                        nonce=reg.nonce,
+                                    )
+
+                                self._last_update_id = max(self._last_update_id or 0, up_id)
+                                consume_res = await self.telegram_repo.consume_reply(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                await self.telegram_repo.release_poll_lease(
+                                    self.bot_chat_key, poll_lease
+                                )
+                                await self.telegram_repo.release_waiter(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                if not consume_res.consumed:
+                                    return CorrelationWaitResult(
+                                        status=CorrelationStatus.STORAGE_ERROR,
+                                        error_reason="consume_reply_failed",
+                                        nonce=reg.nonce,
+                                    )
+
+                                return CorrelationWaitResult(
+                                    status=CorrelationStatus.REPLIED,
+                                    reply_text=consume_res.reply_text,
+                                    nonce=reg.nonce,
+                                )
+                        else:
+                            cursor_saved = await self.telegram_repo.save_cursor(
+                                self.bot_chat_key, up_id, poll_lease
+                            )
+                            if not cursor_saved:
+                                await self.telegram_repo.release_poll_lease(
+                                    self.bot_chat_key, poll_lease
+                                )
+                                await self.telegram_repo.release_waiter(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                return CorrelationWaitResult(
+                                    status=CorrelationStatus.STORAGE_ERROR,
+                                    error_reason="cursor_save_failed_nonmatching",
+                                    nonce=reg.nonce,
+                                )
+                            self._last_update_id = max(self._last_update_id or 0, up_id)
+
+        except Exception as exc:
+            await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+            await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+            sanitized = redact_string(str(exc), extra_secrets=[token])
+            raise RuntimeError(f"Telegram getUpdates error: {sanitized}") from None
+
+        # Deadline reached: mark timed out
+        await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+        timed_out_ok = await self.telegram_repo.mark_timed_out(
+            correlation_key, waiter_lease.lease_id
+        )
+        await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+        if not timed_out_ok:
+            curr = await self.telegram_repo.get_correlation(correlation_key)
+            if curr and curr.status in (CorrelationStatus.REPLIED, CorrelationStatus.CONSUMED):
+                return CorrelationWaitResult(
+                    status=curr.status,
+                    reply_text=curr.reply_text,
+                    nonce=reg.nonce,
+                )
+            return CorrelationWaitResult(
+                status=CorrelationStatus.STORAGE_ERROR,
+                error_reason="mark_timed_out_failed",
+                nonce=reg.nonce,
+            )
+
+        return CorrelationWaitResult(
+            status=CorrelationStatus.TIMED_OUT,
+            timed_out=True,
+            nonce=reg.nonce,
+        )
+
+    async def drain_outbox(self, limit: int = 10) -> OutboxDrainResult:
+        """Drain due queued outbox records with checked delivery and bounded backoff."""
+        claim = await self.outbox_repo.claim_due_records(limit=limit)
+        if not claim.claimed or not claim.records:
+            return OutboxDrainResult()
+
+        sent_count = 0
+        failed_count = 0
+        unknown_count = 0
+        errors: list[str] = []
+
+        for record in claim.records:
+            record_lease = record.lease_id
+            if not record_lease:
+                continue
+
+            all_chunks_ok = True
+            for chunk in record.chunks:
+                if chunk.sent and chunk.message_id is not None:
+                    continue
+
+                # Mark chunk in flight
+                marked_flight = await self.outbox_repo.mark_chunk_in_flight(
+                    record.idempotency_key, chunk.chunk_index, record_lease
+                )
+                if not marked_flight:
+                    all_chunks_ok = False
+                    errors.append(
+                        f"Outbox in-flight transition failed for chunk {chunk.chunk_index}"
+                    )
+                    break
+
+                try:
+                    msg_id = await self._send_single_message(chunk.text, None)
+                    if msg_id is None:
+                        raise TelegramTransportAmbiguousError(
+                            "sendMessage returned None message_id"
+                        )
+                except TelegramApiDefiniteRejectError as reject_err:
+                    all_chunks_ok = False
+                    errors.append(f"Outbox send rejected ({type(reject_err).__name__})")
+                    failed_marked = await self.outbox_repo.mark_record_failed(
+                        record.idempotency_key,
+                        f"ApiReject ({type(reject_err).__name__})",
+                        lease_id=record_lease,
+                        current_attempts=record.attempts,
+                        reset_in_flight_chunk=chunk.chunk_index,
+                    )
+                    if failed_marked:
+                        failed_count += 1
+                    break
+                except Exception as ambig_err:
+                    all_chunks_ok = False
+                    errors.append(f"Outbox send ambiguous ({type(ambig_err).__name__})")
+                    unk_marked = await self.outbox_repo.mark_delivery_unknown(
+                        record.idempotency_key,
+                        f"SendAmbiguous ({type(ambig_err).__name__})",
+                        lease_id=record_lease,
+                    )
+                    if unk_marked:
+                        unknown_count += 1
+                    break
+
+                # Update chunk confirmed sent
+                chunk_marked = await self.outbox_repo.mark_chunk_sent(
+                    record.idempotency_key, chunk.chunk_index, msg_id, record_lease
+                )
+                if not chunk_marked:
+                    all_chunks_ok = False
+                    unk_marked = await self.outbox_repo.mark_delivery_unknown(
+                        record.idempotency_key,
+                        "Mongo chunk update failed after checked Telegram send",
+                        lease_id=record_lease,
+                    )
+                    if unk_marked:
+                        unknown_count += 1
+                    break
+
+            if all_chunks_ok:
+                record_marked = await self.outbox_repo.mark_record_sent(
+                    record.idempotency_key, lease_id=record_lease
+                )
+                if record_marked:
+                    sent_count += 1
+                else:
+                    unk_marked = await self.outbox_repo.mark_delivery_unknown(
+                        record.idempotency_key,
+                        "Mongo record mark_sent failed after all chunks delivered",
+                        lease_id=record_lease,
+                    )
+                    if unk_marked:
+                        unknown_count += 1
+
+        return OutboxDrainResult(
+            total_processed=len(claim.records),
+            sent_count=sent_count,
+            failed_count=failed_count,
+            unknown_count=unknown_count,
+            errors=errors,
+        )
+
+    async def enqueue_and_deliver(
+        self,
+        idempotency_key: str,
+        notification_type: str,
+        run_id: str,
+        text: str,
+        job_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> OutboxDeliveryResult:
+        """Enqueue notification and attempt delivery."""
+        enq = await self.outbox_repo.enqueue_notification(
+            idempotency_key=idempotency_key,
+            notification_type=notification_type,
+            run_id=run_id,
+            payload_text=text,
+            job_id=job_id,
+            metadata=metadata,
+        )
+        if not enq.enqueued and not enq.already_exists:
+            return OutboxDeliveryResult(
+                success=False,
+                status=OutboxStatus.FAILED,
+                idempotency_key=idempotency_key,
+                reason=enq.reason or "enqueue_failed",
+            )
+
+        # Drain outbox to deliver due records
+        await self.drain_outbox(limit=10)
+
+        record = await self.outbox_repo.get_record(idempotency_key)
+        if record is not None:
+            total_chunks = len(record.chunks)
+            chunks_sent = sum(1 for c in record.chunks if c.sent)
+            return OutboxDeliveryResult(
+                success=(record.status == OutboxStatus.SENT),
+                status=record.status,
+                idempotency_key=idempotency_key,
+                chunks_sent=chunks_sent,
+                total_chunks=total_chunks,
+                reason=record.error_reason,
+            )
+        return OutboxDeliveryResult(
+            success=False,
+            status=OutboxStatus.FAILED,
+            idempotency_key=idempotency_key,
+            reason="record_not_found",
+        )

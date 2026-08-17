@@ -11,6 +11,23 @@ from .application import (
     DocumentBundle,
 )
 from .job import JobPosting, QualificationResult
+from .telegram import (
+    CorrelationConsumeResult,
+    CorrelationLeaseResult,
+    CorrelationRegisterResult,
+    CorrelationReplyResult,
+    CorrelationStatus,
+    CorrelationWaitResult,
+    OutboxChunk,
+    OutboxClaimResult,
+    OutboxDeliveryResult,
+    OutboxDrainResult,
+    OutboxEnqueueResult,
+    OutboxRecord,
+    OutboxStatus,
+    TelegramCorrelation,
+    TelegramCursor,
+)
 
 __all__ = [
     "JobPosting",
@@ -23,4 +40,19 @@ __all__ = [
     "LEGAL_ATTEMPT_TRANSITIONS",
     "DocumentBundle",
     "ApplicationResult",
+    "OutboxStatus",
+    "CorrelationStatus",
+    "OutboxChunk",
+    "OutboxRecord",
+    "OutboxEnqueueResult",
+    "OutboxClaimResult",
+    "OutboxDeliveryResult",
+    "OutboxDrainResult",
+    "TelegramCorrelation",
+    "TelegramCursor",
+    "CorrelationRegisterResult",
+    "CorrelationLeaseResult",
+    "CorrelationReplyResult",
+    "CorrelationConsumeResult",
+    "CorrelationWaitResult",
 ]

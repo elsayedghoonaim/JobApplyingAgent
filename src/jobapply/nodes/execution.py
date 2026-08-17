@@ -1,16 +1,20 @@
 """Execution node - Easy Apply automation with inline Telegram Q&A."""
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
-from uuid import uuid4
 
 from langsmith.run_helpers import trace
 
 from jobapply.models.application import ApplicationStatus, AttemptStatus
+from jobapply.models.telegram import (
+    CorrelationStatus,
+    OutboxDeliveryResult,
+)
 from jobapply.nodes.outcomes import (
     append_application_outcome,
     build_application_outcome,
@@ -32,7 +36,7 @@ from jobapply.utils.account_safety import (
 )
 from jobapply.utils.attempts import AttemptRepository, QuotaRepository
 from jobapply.utils.browser import get_randomized_delay, managed_browser, take_error_screenshot
-from jobapply.utils.dedup import DeduplicationStore
+from jobapply.utils.dedup import DeduplicationStore, canonicalize_job_id
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.limits import caps_reached
 from jobapply.utils.llm import get_llm
@@ -94,6 +98,12 @@ class UserSkippedJob(Exception):
     def __init__(self, question: str):
         super().__init__("User skipped the job from Telegram")
         self.question = question
+
+
+class FormQaInfrastructureError(RuntimeError):
+    """Signal that Telegram form Q&A correlation or delivery failed."""
+
+    pass
 
 
 def is_skip_job_reply(reply: str | None) -> bool:
@@ -706,9 +716,10 @@ async def ask_user_for_question(
     telegram: TelegramClient,
     settings,
     options: list[str] | None = None,
+    run_id: str | None = None,
+    ordinal: int = 0,
 ) -> tuple[str | None, bool]:
     """Ask on Telegram and normalize a natural reply with Gemma."""
-    nonce = str(uuid4())[:8]
     display_question, display_options = await translate_question_for_telegram(
         question_text,
         options,
@@ -719,13 +730,41 @@ async def ask_user_for_question(
         message += "\n\n" + "\n".join(f"- {option}" for option in display_options)
     message += "\n\n- /skip — Skip this job"
 
-    prompt_message_id = await telegram.send_message(message)
-    reply = await telegram.wait_for_correlated_reply(
-        nonce=nonce,
-        timeout=settings.form_qa_timeout_seconds,
-        reply_to_message_id=prompt_message_id,
-    )
-    if reply is None:
+    safe_run_id = str(run_id or job.get("run_id") or "default_run")
+    canonical_job_id = canonicalize_job_id(job.get("job_id", "unknown")) or "unknown"
+    q_hash = hashlib.sha256(question_text.strip().lower().encode("utf-8")).hexdigest()[:16]
+    corr_key = f"form_qa:{safe_run_id}:{canonical_job_id}:{ordinal}:{q_hash}"
+
+    try:
+        wait_res = await telegram.send_and_wait_for_reply(
+            correlation_key=corr_key,
+            purpose="form_qa",
+            run_id=safe_run_id,
+            prompt_text=message,
+            timeout=settings.form_qa_timeout_seconds,
+            job_id=canonical_job_id,
+        )
+    except Exception as exc:
+        raise FormQaInfrastructureError(
+            f"Form Q&A execution exception ({type(exc).__name__})"
+        ) from None
+
+    if wait_res.status == CorrelationStatus.REPLIED and wait_res.reply_text:
+        reply = wait_res.reply_text
+        timed_out = False
+    elif wait_res.status == CorrelationStatus.TIMED_OUT:
+        reply = None
+        timed_out = True
+    elif wait_res.status == CorrelationStatus.CONSUMED:
+        raise FormQaInfrastructureError(
+            "Telegram form Q&A correlation already consumed in prior run"
+        )
+    else:
+        raise FormQaInfrastructureError(
+            f"Telegram form Q&A delivery failed ({wait_res.status.value})"
+        )
+
+    if timed_out or reply is None:
         return None, True
     if is_skip_job_reply(reply):
         raise UserSkippedJob(question_text)
@@ -991,13 +1030,30 @@ def format_application_receipt(outcome: dict) -> str:
 async def send_application_receipt(
     telegram: TelegramClient,
     outcome: dict,
+    run_id: str | None = None,
 ) -> str | None:
-    """Send a receipt without changing a successful application outcome on failure."""
+    """Send a receipt via durable outbox without changing a successful application outcome on failure."""
     try:
-        await telegram.send_message(format_application_receipt(outcome))
+        safe_run_id = str(run_id or outcome.get("run_id") or "default_run")
+        job_id = canonicalize_job_id(outcome.get("job_id", "unknown")) or "unknown"
+        status = str(outcome.get("status") or "unknown")
+        idempotency_key = f"receipt:{safe_run_id}:{job_id}:{status}"
+        text = format_application_receipt(outcome)
+
+        res = await telegram.enqueue_and_deliver(
+            idempotency_key=idempotency_key,
+            notification_type="application_receipt",
+            run_id=safe_run_id,
+            text=text,
+            job_id=job_id,
+        )
+        if isinstance(res, OutboxDeliveryResult) and not res.success:
+            return (
+                f"Telegram application receipt outbox delivery pending/failed ({res.status.value})"
+            )
         return None
     except Exception as exc:
-        return f"Telegram application receipt failed: {exc}"
+        return f"Telegram application receipt delivery exception ({type(exc).__name__})"
 
 
 async def execution_node(state: JobApplyState) -> dict:
@@ -1011,6 +1067,7 @@ async def execution_node(state: JobApplyState) -> dict:
     """
     settings = get_settings()
     current_job = state.get("current_job")
+    run_id = str(state.get("run_id") or "default_run")
     form_qa_exchanges = []
 
     if caps_reached(state):
@@ -1202,7 +1259,9 @@ async def execution_node(state: JobApplyState) -> dict:
                         receipt_error = await send_application_receipt(
                             telegram,
                             update["application_outcomes"][-1],
+                            run_id=run_id,
                         )
+
                         if receipt_error:
                             errors.append(receipt_error)
                         if errors:
@@ -1364,7 +1423,10 @@ async def execution_node(state: JobApplyState) -> dict:
                                 current_job,
                                 telegram,
                                 settings,
+                                run_id=run_id,
+                                ordinal=len(form_qa_exchanges),
                             )
+
                             form_qa_exchanges.append(
                                 {
                                     "question": label,
@@ -1435,6 +1497,8 @@ async def execution_node(state: JobApplyState) -> dict:
                                 telegram,
                                 settings,
                                 options=option_labels,
+                                run_id=run_id,
+                                ordinal=len(form_qa_exchanges),
                             )
 
                             form_qa_exchanges.append(
@@ -1519,7 +1583,10 @@ async def execution_node(state: JobApplyState) -> dict:
                             telegram,
                             settings,
                             options=labels,
+                            run_id=run_id,
+                            ordinal=len(form_qa_exchanges),
                         )
+
                         form_qa_exchanges.append(
                             {
                                 "question": question,
@@ -1606,7 +1673,10 @@ async def execution_node(state: JobApplyState) -> dict:
                             telegram,
                             settings,
                             options=labels,
+                            run_id=run_id,
+                            ordinal=len(form_qa_exchanges),
                         )
+
                         form_qa_exchanges.append(
                             {
                                 "question": question,
@@ -1710,7 +1780,10 @@ async def execution_node(state: JobApplyState) -> dict:
                                     telegram,
                                     settings,
                                     options=option_labels,
+                                    run_id=run_id,
+                                    ordinal=len(form_qa_exchanges),
                                 )
+
                                 form_qa_exchanges.append(
                                     {
                                         "question": prompt_question,
@@ -1760,8 +1833,14 @@ async def execution_node(state: JobApplyState) -> dict:
                             if not auto_value:
                                 print(f"[LIVE] Sending Telegram input question: '{label}'")
                                 answer, timed_out = await ask_user_for_question(
-                                    label, current_job, telegram, settings
+                                    label,
+                                    current_job,
+                                    telegram,
+                                    settings,
+                                    run_id=run_id,
+                                    ordinal=len(form_qa_exchanges),
                                 )
+
                                 form_qa_exchanges.append(
                                     {
                                         "question": label,
@@ -1824,7 +1903,10 @@ async def execution_node(state: JobApplyState) -> dict:
                                     telegram,
                                     settings,
                                     options=["Yes", "No"],
+                                    run_id=run_id,
+                                    ordinal=len(form_qa_exchanges),
                                 )
+
                                 form_qa_exchanges.append(
                                     {
                                         "question": cb_label,
@@ -1877,7 +1959,10 @@ async def execution_node(state: JobApplyState) -> dict:
                                     telegram,
                                     settings,
                                     options=["Yes", "No"],
+                                    run_id=run_id,
+                                    ordinal=len(form_qa_exchanges),
                                 )
+
                                 form_qa_exchanges.append(
                                     {
                                         "question": cb_label,
@@ -1956,7 +2041,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                 receipt_error = await send_application_receipt(
                                     telegram,
                                     update["application_outcomes"][-1],
+                                    run_id=run_id,
                                 )
+
                                 if receipt_error:
                                     update["errors"] = list(
                                         update.get("errors") or state.get("errors") or []
@@ -2337,7 +2424,9 @@ async def execution_node(state: JobApplyState) -> dict:
             receipt_error = await send_application_receipt(
                 telegram,
                 update["application_outcomes"][-1],
+                run_id=run_id,
             )
+
             if receipt_error:
                 update["errors"] = list(update.get("errors") or state.get("errors") or []) + [
                     receipt_error
@@ -2407,6 +2496,14 @@ async def execution_node(state: JobApplyState) -> dict:
             f"User skipped the job while answering: {exc.question}",
             form_qa_exchanges,
             {"skip_question": exc.question},
+        )
+    except FormQaInfrastructureError as qa_err:
+        await _safe_close_page(page)
+        return _manual_review_update(
+            state,
+            "form_qa_infrastructure_failed",
+            f"Telegram Q&A storage/delivery error ({type(qa_err).__name__})",
+            form_qa_exchanges,
         )
     except Exception as e:
         if already_submitted_terminal:

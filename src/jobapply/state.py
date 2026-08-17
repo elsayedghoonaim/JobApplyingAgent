@@ -41,6 +41,8 @@ class JobApplyState(TypedDict):
 
     # ── Notification ──
     notification_sent: bool
+    outbox_pending_count: Optional[int]
+    outbox_unknown_count: Optional[int]
 
     # ── Account safety ──
     account_safety_paused: bool

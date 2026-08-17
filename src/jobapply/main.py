@@ -87,6 +87,8 @@ async def run(
         "application_error": None,
         "form_qa_exchanges": None,
         "notification_sent": False,
+        "outbox_pending_count": 0,
+        "outbox_unknown_count": 0,
         "account_safety_paused": False,
         "account_safety_barrier_type": None,
         "account_safety_reason": None,

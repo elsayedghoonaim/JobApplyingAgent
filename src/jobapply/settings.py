@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     seen_jobs_collection: str = "seen_jobs"
     application_attempts_collection: str = "application_attempts"
     application_quotas_collection: str = "application_quotas"
+    telegram_correlations_collection: str = "telegram_correlations"
+    telegram_cursors_collection: str = "telegram_cursors"
+    notification_outbox_collection: str = "notification_outbox"
+    telegram_correlation_ttl_seconds: int = Field(default=604800, ge=3600)
+    telegram_poll_lease_seconds: int = Field(default=30, ge=5)
+    outbox_max_attempts: int = Field(default=3, ge=1)
+    outbox_initial_backoff_seconds: int = Field(default=5, ge=1)
+    outbox_max_backoff_seconds: int = Field(default=300, ge=1)
+    outbox_lease_seconds: int = Field(default=60, ge=5)
 
     # Search
     search_queries: str = "Machine Learning Engineer,AI Engineer"
