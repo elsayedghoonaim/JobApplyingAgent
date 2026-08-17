@@ -11,7 +11,11 @@ from jobapply.graph import (
     route_select_next_job,
     route_start,
 )
-from jobapply.models.application import ApplicationStatus
+from jobapply.models.application import (
+    ApplicationStatus,
+    AttemptPreflightResult,
+    AttemptStatus,
+)
 from jobapply.nodes.execution import (
     execution_node,
     wait_for_submission_confirmation,
@@ -32,6 +36,12 @@ from jobapply.utils.account_safety import (
     inspect_page_account_safety,
     sanitize_evidence_string,
     sanitize_url_for_evidence,
+)
+from jobapply.utils.attempts import (
+    AttemptClaimResult,
+    AttemptRepository,
+    QuotaRepository,
+    QuotaReservationResult,
 )
 
 
@@ -484,6 +494,11 @@ async def test_execution_node_pauses_before_easy_apply_click(
 @patch("jobapply.nodes.execution.TelegramClient")
 @patch("jobapply.nodes.execution.os.path.exists", return_value=True)
 @patch("yaml.safe_load", return_value={})
+@patch.object(
+    AttemptRepository,
+    "preflight_check",
+    AsyncMock(return_value=AttemptPreflightResult(can_proceed=True)),
+)
 async def test_execution_node_pauses_top_of_form_step_and_never_fills(
     mock_yaml, mock_exists, mock_telegram_class, mock_managed_browser
 ):
@@ -694,6 +709,36 @@ async def test_wait_for_submission_or_safety_confirms_success():
 @patch("jobapply.nodes.execution.os.path.exists", return_value=True)
 @patch("yaml.safe_load", return_value={})
 @patch("jobapply.nodes.execution.find_navigation_button")
+@patch.object(
+    AttemptRepository,
+    "preflight_check",
+    AsyncMock(return_value=AttemptPreflightResult(can_proceed=True)),
+)
+@patch.object(
+    AttemptRepository,
+    "begin_attempt",
+    AsyncMock(
+        return_value=AttemptClaimResult(
+            claimed=True,
+            status=AttemptStatus.CREATED,
+            attempt_id="att_account_safety_test",
+        )
+    ),
+)
+@patch.object(
+    QuotaRepository,
+    "reserve_quota",
+    AsyncMock(
+        return_value=QuotaReservationResult(
+            success=True,
+            already_reserved=False,
+            daily_reserved=1,
+            session_reserved=1,
+        )
+    ),
+)
+@patch.object(AttemptRepository, "reserve_quota_state", AsyncMock(return_value=True))
+@patch.object(AttemptRepository, "mark_unknown", AsyncMock(return_value=True))
 async def test_execution_node_unconfirmed_timeout_halts_with_pause_and_notification_route(
     mock_find_nav, mock_yaml, mock_exists, mock_telegram_class, mock_managed_browser
 ):
@@ -788,6 +833,36 @@ async def test_execution_node_unconfirmed_timeout_halts_with_pause_and_notificat
 @patch("jobapply.nodes.execution.os.path.exists", return_value=True)
 @patch("yaml.safe_load", return_value={})
 @patch("jobapply.nodes.execution.find_navigation_button")
+@patch.object(
+    AttemptRepository,
+    "preflight_check",
+    AsyncMock(return_value=AttemptPreflightResult(can_proceed=True)),
+)
+@patch.object(
+    AttemptRepository,
+    "begin_attempt",
+    AsyncMock(
+        return_value=AttemptClaimResult(
+            claimed=True,
+            status=AttemptStatus.CREATED,
+            attempt_id="att_account_safety_test",
+        )
+    ),
+)
+@patch.object(
+    QuotaRepository,
+    "reserve_quota",
+    AsyncMock(
+        return_value=QuotaReservationResult(
+            success=True,
+            already_reserved=False,
+            daily_reserved=1,
+            session_reserved=1,
+        )
+    ),
+)
+@patch.object(AttemptRepository, "reserve_quota_state", AsyncMock(return_value=True))
+@patch.object(AttemptRepository, "mark_unknown", AsyncMock(return_value=True))
 async def test_execution_node_submit_click_exception_treated_as_ambiguous_review(
     mock_find_nav, mock_yaml, mock_exists, mock_telegram_class, mock_managed_browser
 ):
@@ -873,6 +948,11 @@ async def test_execution_node_submit_click_exception_treated_as_ambiguous_review
 @patch("jobapply.nodes.execution.os.path.exists", return_value=True)
 @patch("yaml.safe_load", return_value={})
 @patch("jobapply.nodes.execution.find_navigation_button")
+@patch.object(
+    AttemptRepository,
+    "preflight_check",
+    AsyncMock(return_value=AttemptPreflightResult(can_proceed=True)),
+)
 async def test_execution_node_typed_barrier_error_through_broad_handler(
     mock_find_nav, mock_yaml, mock_exists, mock_telegram_class, mock_managed_browser
 ):

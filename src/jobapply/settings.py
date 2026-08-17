@@ -73,6 +73,8 @@ class Settings(BaseSettings):
 
     # Persistence
     seen_jobs_collection: str = "seen_jobs"
+    application_attempts_collection: str = "application_attempts"
+    application_quotas_collection: str = "application_quotas"
 
     # Search
     search_queries: str = "Machine Learning Engineer,AI Engineer"

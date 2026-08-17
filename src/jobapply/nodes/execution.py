@@ -5,12 +5,12 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 from langsmith.run_helpers import trace
 
-from jobapply.models.application import ApplicationStatus
+from jobapply.models.application import ApplicationStatus, AttemptStatus
 from jobapply.nodes.outcomes import (
     append_application_outcome,
     build_application_outcome,
@@ -30,6 +30,7 @@ from jobapply.utils.account_safety import (
     sanitize_evidence_string,
     sanitize_url_for_evidence,
 )
+from jobapply.utils.attempts import AttemptRepository, QuotaRepository
 from jobapply.utils.browser import get_randomized_delay, managed_browser, take_error_screenshot
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.json_output import extract_json_object
@@ -927,7 +928,12 @@ def _failed_update(state: JobApplyState, error: str, form_qa_exchanges: list[dic
     }
 
 
-def _applied_update(state: JobApplyState, status: str, form_qa_exchanges: list[dict]) -> dict:
+def _applied_update(
+    state: JobApplyState,
+    status: str,
+    form_qa_exchanges: list[dict],
+    increment_counters: bool = True,
+) -> dict:
     """Build a submitted or dry-run-ready outcome update."""
     outcome = build_application_outcome(
         state,
@@ -944,7 +950,7 @@ def _applied_update(state: JobApplyState, status: str, form_qa_exchanges: list[d
         "application_outcomes": append_application_outcome(state, outcome),
     }
 
-    if status == "submitted":
+    if status == "submitted" and increment_counters:
         update["applications_count"] = state["applications_count"] + 1
         update["daily_applications_count"] = state["daily_applications_count"] + 1
 
@@ -1040,9 +1046,96 @@ async def execution_node(state: JobApplyState) -> dict:
             state, f"Execution failed: profile load failed: {str(e)}", form_qa_exchanges
         )
 
+    run_id = str(state.get("run_id") or "default_run")
+    dry_run = bool(state.get("dry_run", True))
+    job_id = str(current_job.get("job_id") or "")
+    attempt_repo = AttemptRepository()
+    quota_repo = QuotaRepository()
+
+    # Read-only attempt preflight check before opening browser
+    if not dry_run and job_id:
+        try:
+            preflight = await attempt_repo.preflight_check(job_id=job_id)
+            if not preflight.can_proceed:
+                if preflight.status == AttemptStatus.SUBMITTED:
+                    return _skipped_update(
+                        state,
+                        "already_submitted",
+                        f"Job {job_id} was already submitted in a prior run",
+                        form_qa_exchanges,
+                        extra={"job_id": job_id, "attempt_status": "submitted"},
+                    )
+                if preflight.status == AttemptStatus.SUBMISSION_UNKNOWN:
+                    return _manual_review_update(
+                        state,
+                        "submission_unknown_prior_attempt",
+                        f"Job {job_id} has a prior submission_unknown attempt; manual review required before retrying",
+                        form_qa_exchanges,
+                        extra={
+                            "job_id": job_id,
+                            "attempt_status": "submission_unknown",
+                            "ambiguous_submission": True,
+                        },
+                    )
+                return _skipped_update(
+                    state,
+                    "concurrent_worker_active",
+                    f"Job {job_id} has an active in-progress attempt ({preflight.reason})",
+                    form_qa_exchanges,
+                    extra={"job_id": job_id, "attempt_id": preflight.existing_attempt_id},
+                )
+        except Exception as exc:
+            return _failed_update(
+                state,
+                f"Execution preflight check failed ({type(exc).__name__})",
+                form_qa_exchanges,
+            )
+
     application_submitted = False
     submission_attempted = False
+    primary_submission_persisted = False
+    already_submitted_terminal = False
+    should_increment_counters = False
+    attempt_id: Optional[str] = None
+    quota_reserved = False
+    secondary_errors: list[str] = []
     page = None
+
+    async def _safe_close_page(p: Any) -> Optional[str]:
+        """Safely close page and return a bounded class-only error if close fails."""
+        if p is not None:
+            try:
+                if hasattr(p, "is_closed") and not p.is_closed():
+                    await p.close()
+                elif not hasattr(p, "is_closed"):
+                    await p.close()
+            except Exception as close_exc:
+                return f"PageCloseError ({type(close_exc).__name__})"
+        return None
+
+    async def _cleanup_pre_click(reason: str, quota_was_reserved: bool) -> tuple[bool, list[str]]:
+        cleanup_errs: list[str] = []
+        quota_ok = True
+        attempt_ok = True
+        if quota_was_reserved and attempt_id:
+            try:
+                q_res = await quota_repo.release_quota(attempt_id, run_id)
+                if not q_res.success and not q_res.already_released:
+                    quota_ok = False
+                    cleanup_errs.append(f"Pre-click quota release failed ({q_res.reason})")
+            except Exception as q_exc:
+                quota_ok = False
+                cleanup_errs.append(f"Pre-click quota release exception ({type(q_exc).__name__})")
+        if attempt_id:
+            try:
+                a_ok = await attempt_repo.mark_released(job_id, attempt_id, reason=reason)
+                if not a_ok:
+                    attempt_ok = False
+                    cleanup_errs.append("Pre-click attempt release failed")
+            except Exception as a_exc:
+                attempt_ok = False
+                cleanup_errs.append(f"Pre-click attempt release exception ({type(a_exc).__name__})")
+        return (quota_ok and attempt_ok, cleanup_errs)
 
     try:
         async with trace(
@@ -1086,7 +1179,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         print(
                             "[LIVE] LinkedIn shows this job was already applied to. Skipping safely."
                         )
-                        await page.close()
+                        await _safe_close_page(page)
                         update = _skipped_update(
                             state,
                             "already_applied",
@@ -1117,7 +1210,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         return update
 
                     print("❌ [LIVE] No Easy Apply button or applied status found. Skipping.")
-                    await page.close()
+                    await _safe_close_page(page)
                     return _skipped_update(
                         state,
                         "no_easy_apply",
@@ -1176,7 +1269,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             )
                             if "already applied" in body_text.lower():
                                 print("[LIVE] Already applied to this job previously.")
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _skipped_update(
                                     state,
                                     "already_applied",
@@ -1230,7 +1323,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         print(
                             "⚠️ [LIVE] Form requires external redirect or assessment. Needs manual review."
                         )
-                        await page.close()
+                        await _safe_close_page(page)
                         return _manual_review_update(
                             state,
                             "external_or_assessment",
@@ -1280,7 +1373,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 }
                             )
                             if timed_out:
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _skipped_update(
                                     state,
                                     "form_qa_timeout",
@@ -1354,7 +1447,7 @@ async def execution_node(state: JobApplyState) -> dict:
 
                             if timed_out:
                                 print("❌ [LIVE] Q&A timed out. Skipping job.")
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _skipped_update(
                                     state,
                                     "form_qa_timeout",
@@ -1372,7 +1465,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 selected_label = option_labels[matched]
 
                         if not selected_label:
-                            await page.close()
+                            await _safe_close_page(page)
                             return _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
@@ -1435,7 +1528,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             }
                         )
                         if timed_out:
-                            await page.close()
+                            await _safe_close_page(page)
                             return _skipped_update(
                                 state,
                                 "form_qa_timeout",
@@ -1445,7 +1538,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             )
                         matched = match_choice_index(answer, labels) if answer is not None else None
                         if matched is None:
-                            await page.close()
+                            await _safe_close_page(page)
                             return _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
@@ -1497,7 +1590,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 option_pairs.append((option, label))
                         labels = [label for _, label in option_pairs]
                         if not labels:
-                            await page.close()
+                            await _safe_close_page(page)
                             return _manual_review_update(
                                 state,
                                 "choice_options_not_found",
@@ -1522,7 +1615,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             }
                         )
                         if timed_out:
-                            await page.close()
+                            await _safe_close_page(page)
                             return _skipped_update(
                                 state,
                                 "form_qa_timeout",
@@ -1532,7 +1625,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             )
                         matched = match_choice_index(answer, labels) if answer is not None else None
                         if matched is None:
-                            await page.close()
+                            await _safe_close_page(page)
                             return _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
@@ -1627,7 +1720,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 )
                                 if timed_out:
                                     print("❌ [LIVE] Q&A timed out. Skipping job.")
-                                    await page.close()
+                                    await _safe_close_page(page)
                                     return _skipped_update(
                                         state,
                                         "form_qa_timeout",
@@ -1645,7 +1738,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     val_to_select = val or txt
 
                             if not val_to_select:
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _manual_review_update(
                                     state,
                                     "choice_answer_unmatched",
@@ -1678,7 +1771,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 )
                                 if timed_out:
                                     print("❌ [LIVE] Q&A timed out. Skipping job.")
-                                    await page.close()
+                                    await _safe_close_page(page)
                                     return _skipped_update(
                                         state,
                                         "form_qa_timeout",
@@ -1740,7 +1833,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     }
                                 )
                                 if timed_out:
-                                    await page.close()
+                                    await _safe_close_page(page)
                                     return _skipped_update(
                                         state,
                                         "form_qa_timeout",
@@ -1759,7 +1852,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     }
                                 )
                             if not consent_granted:
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _skipped_update(
                                     state,
                                     "consent_declined",
@@ -1793,7 +1886,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     }
                                 )
                                 if timed_out:
-                                    await page.close()
+                                    await _safe_close_page(page)
                                     return _skipped_update(
                                         state,
                                         "form_qa_timeout",
@@ -1811,7 +1904,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     await cb.check()
                                     await asyncio.sleep(0.3)
                                 elif required_choice:
-                                    await page.close()
+                                    await _safe_close_page(page)
                                     return _manual_review_update(
                                         state,
                                         "required_choice_declined",
@@ -1840,12 +1933,12 @@ async def execution_node(state: JobApplyState) -> dict:
                             # Guard immediately BEFORE submit (and BEFORE dry-run branch / enabled checks)
                             await guard_page_account_safety(page, stage="execution_pre_submit")
 
-                            # Final submit
+                            # Dry run mode
                             if state["dry_run"]:
                                 print(
                                     "[LIVE] Dry run mode - reached review/submit step. Closing modal without submitting."
                                 )
-                                await page.close()
+                                await _safe_close_page(page)
                                 update = _applied_update(state, "dry_run", form_qa_exchanges)
                                 try:
                                     await DeduplicationStore().mark_seen(
@@ -1871,7 +1964,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 return update
 
                             if not await next_btn.is_enabled():
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _manual_review_update(
                                     state,
                                     "submit_button_disabled",
@@ -1879,27 +1972,201 @@ async def execution_node(state: JobApplyState) -> dict:
                                     form_qa_exchanges,
                                 )
 
-                            fresh_daily_count = await DeduplicationStore().get_daily_count()
-                            if fresh_daily_count >= state["daily_application_cap"]:
-                                await page.close()
+                            # 1. Claim attempt ownership at the final submit boundary
+                            claim = await attempt_repo.begin_attempt(
+                                job_id=job_id,
+                                run_id=run_id,
+                                metadata={
+                                    "title": current_job.get("title"),
+                                    "company": current_job.get("company"),
+                                    "url": current_job.get("url"),
+                                },
+                            )
+                            if not claim.claimed:
+                                await _safe_close_page(page)
+                                if claim.status == AttemptStatus.SUBMITTED:
+                                    return _skipped_update(
+                                        state,
+                                        "already_submitted",
+                                        f"Job {job_id} was already submitted in a prior run",
+                                        form_qa_exchanges,
+                                        extra={"job_id": job_id, "attempt_status": "submitted"},
+                                    )
+                                if claim.status == AttemptStatus.SUBMISSION_UNKNOWN:
+                                    return _manual_review_update(
+                                        state,
+                                        "submission_unknown_prior_attempt",
+                                        f"Job {job_id} has a prior submission_unknown attempt; manual review required before retrying",
+                                        form_qa_exchanges,
+                                        extra={
+                                            "job_id": job_id,
+                                            "attempt_status": "submission_unknown",
+                                            "ambiguous_submission": True,
+                                        },
+                                    )
                                 return _skipped_update(
                                     state,
-                                    "daily_cap_reached",
-                                    "Daily cap reached immediately before submission",
+                                    "concurrent_worker_active",
+                                    f"Job {job_id} is currently claimed by run {claim.existing_run_id}",
                                     form_qa_exchanges,
+                                    extra={
+                                        "job_id": job_id,
+                                        "existing_run_id": claim.existing_run_id,
+                                    },
+                                )
+
+                            attempt_id = claim.attempt_id
+
+                            # 2. Atomic conditional quota reservation
+                            try:
+                                reservation = await quota_repo.reserve_quota(
+                                    attempt_id=attempt_id,
+                                    job_id=job_id,
+                                    run_id=run_id,
+                                    daily_cap=int(
+                                        state.get(
+                                            "daily_application_cap", settings.daily_application_cap
+                                        )
+                                    ),
+                                    session_cap=int(
+                                        state.get(
+                                            "max_applications",
+                                            settings.max_applications_per_session,
+                                        )
+                                    ),
+                                )
+                            except Exception as q_err:
+                                cleaned, c_errs = await _cleanup_pre_click(
+                                    reason=f"reserve_quota_exception:{type(q_err).__name__}",
+                                    quota_was_reserved=False,
+                                )
+                                close_err = await _safe_close_page(page)
+                                if close_err:
+                                    c_errs.append(close_err)
+                                msg = f"Quota reservation failed ({type(q_err).__name__})"
+                                if not cleaned:
+                                    msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
+                                return _manual_review_update(
+                                    state,
+                                    "quota_reservation_failed",
+                                    msg,
+                                    form_qa_exchanges,
+                                    extra={
+                                        "cleanup_errors": c_errs,
+                                        "job_id": job_id,
+                                        "attempt_id": attempt_id,
+                                    },
+                                )
+
+                            if not reservation.success:
+                                cleaned, c_errs = await _cleanup_pre_click(
+                                    reason=reservation.reason or "cap_reached",
+                                    quota_was_reserved=False,
+                                )
+                                close_err = await _safe_close_page(page)
+                                if close_err:
+                                    c_errs.append(close_err)
+                                if not cleaned:
+                                    return _manual_review_update(
+                                        state,
+                                        "cleanup_required",
+                                        f"Application cap reached but cleanup required: {'; '.join(c_errs)}",
+                                        form_qa_exchanges,
+                                        extra={
+                                            "cleanup_errors": c_errs,
+                                            "job_id": job_id,
+                                            "attempt_id": attempt_id,
+                                        },
+                                    )
+                                return _skipped_update(
+                                    state,
+                                    reservation.reason or "daily_cap_reached",
+                                    "Application cap reached immediately before submission",
+                                    form_qa_exchanges,
+                                )
+
+                            quota_reserved = True
+
+                            # 3. Transition attempt to QUOTA_RESERVED
+                            try:
+                                state_ok = await attempt_repo.reserve_quota_state(
+                                    job_id, attempt_id
+                                )
+                            except Exception:
+                                state_ok = False
+
+                            if not state_ok:
+                                cleaned, c_errs = await _cleanup_pre_click(
+                                    reason="reserve_quota_state_failed",
+                                    quota_was_reserved=True,
+                                )
+                                close_err = await _safe_close_page(page)
+                                if close_err:
+                                    c_errs.append(close_err)
+                                msg = "Failed to transition attempt to quota_reserved before submit"
+                                if not cleaned:
+                                    msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
+                                return _manual_review_update(
+                                    state,
+                                    "reserve_quota_state_failed",
+                                    msg,
+                                    form_qa_exchanges,
+                                    extra={
+                                        "cleanup_errors": c_errs,
+                                        "job_id": job_id,
+                                        "attempt_id": attempt_id,
+                                    },
+                                )
+
+                            # 4. Persist SUBMISSION_UNKNOWN durably BEFORE clicking submit
+                            try:
+                                persisted = await attempt_repo.mark_unknown(
+                                    job_id=job_id,
+                                    attempt_id=attempt_id,
+                                    metadata={
+                                        "title": current_job.get("title"),
+                                        "company": current_job.get("company"),
+                                        "url": current_job.get("url"),
+                                        "qa_count": len(form_qa_exchanges),
+                                    },
+                                )
+                                if not persisted:
+                                    raise RuntimeError("Attempt mark_unknown returned False")
+                            except Exception as exc:
+                                # Failed persisting unknown -> release quota, release attempt, DO NOT click submit
+                                cleaned, c_errs = await _cleanup_pre_click(
+                                    reason=f"persist_unknown_failed:{type(exc).__name__}",
+                                    quota_was_reserved=True,
+                                )
+                                close_err = await _safe_close_page(page)
+                                if close_err:
+                                    c_errs.append(close_err)
+                                msg = f"Failed to persist submission_unknown record before click ({type(exc).__name__})"
+                                if not cleaned:
+                                    msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
+                                return _manual_review_update(
+                                    state,
+                                    "persist_unknown_failed",
+                                    msg,
+                                    form_qa_exchanges,
+                                    extra={
+                                        "cleanup_errors": c_errs,
+                                        "job_id": job_id,
+                                        "attempt_id": attempt_id,
+                                    },
                                 )
 
                             submission_attempted = True
                             print("🚀 [LIVE] CLICKING SUBMIT - SUBMITTING APPLICATION!")
                             await next_btn.click()
 
-                            # Monitor delayed post-submit safety barriers and confirmation
+                            # 5. Monitor delayed post-submit safety barriers and confirmation
                             confirmed, post_barrier = await wait_for_submission_or_safety(page)
                             if post_barrier and post_barrier.detected:
                                 print(
                                     f"🛑 [LIVE] Account safety barrier detected after submit: {post_barrier.reason}"
                                 )
-                                await page.close()
+                                await _safe_close_page(page)
                                 return _account_safety_execution_update(
                                     state,
                                     post_barrier,
@@ -1909,7 +2176,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 )
 
                             if not confirmed:
-                                await page.close()
+                                await _safe_close_page(page)
                                 unconfirmed_detection = AccountSafetyDetection(
                                     detected=True,
                                     barrier_type=AccountSafetyBarrierType.INSPECTION_UNAVAILABLE,
@@ -1926,7 +2193,89 @@ async def execution_node(state: JobApplyState) -> dict:
                                     form_qa_exchanges,
                                     pre_submit=False,
                                 )
+
+                            # 6. Explicit confirmation received -> primary durable submitted transition
+                            try:
+                                sub_result = await attempt_repo.mark_submitted(
+                                    job_id=job_id,
+                                    attempt_id=attempt_id,
+                                    metadata={
+                                        "title": current_job.get("title"),
+                                        "company": current_job.get("company"),
+                                        "url": current_job.get("url"),
+                                        "qa_count": len(form_qa_exchanges),
+                                        "resume_edited": resume_was_edited(state),
+                                    },
+                                )
+                                if not sub_result.success:
+                                    raise RuntimeError(
+                                        f"mark_submitted failed ({sub_result.reason})"
+                                    )
+                            except Exception as db_err:
+                                # Primary transition failed: do not retry, no confirmed counters, manual reconciliation outcome
+                                await _safe_close_page(page)
+                                return _manual_review_update(
+                                    state,
+                                    "submission_confirmed_persistence_failed",
+                                    f"Application confirmed on LinkedIn but primary database transition failed ({type(db_err).__name__})",
+                                    form_qa_exchanges,
+                                    extra={
+                                        "ambiguous_submission": True,
+                                        "job_id": job_id,
+                                        "attempt_id": attempt_id,
+                                    },
+                                )
+
+                            if not sub_result.changed:
+                                # Already marked submitted in a racing/resumed call
+                                already_submitted_terminal = True
+                                close_err = await _safe_close_page(page)
+                                if close_err:
+                                    secondary_errors.append(close_err)
+                                update = _skipped_update(
+                                    state,
+                                    "already_submitted",
+                                    f"Job {job_id} was already marked submitted",
+                                    form_qa_exchanges,
+                                    extra={"job_id": job_id, "attempt_status": "submitted"},
+                                )
+                                if secondary_errors:
+                                    update["errors"] = (
+                                        list(state.get("errors") or []) + secondary_errors
+                                    )
+                                return update
+
+                            primary_submission_persisted = True
                             application_submitted = True
+                            should_increment_counters = True
+
+                            # 7. Secondary reconciliation writes (failures do not undo primary submitted state)
+                            try:
+                                commit_res = await quota_repo.commit_quota(attempt_id, run_id)
+                                if not commit_res.success and not commit_res.already_committed:
+                                    secondary_errors.append(
+                                        f"Secondary quota commit failed: {commit_res.reason}"
+                                    )
+                            except Exception as exc:
+                                secondary_errors.append(
+                                    f"Secondary quota commit error: {type(exc).__name__}"
+                                )
+
+                            try:
+                                await DeduplicationStore().mark_seen(
+                                    job_id,
+                                    {
+                                        "status": "submitted",
+                                        "applied_at": datetime.now(timezone.utc),
+                                        "qa_count": len(form_qa_exchanges),
+                                        "resume_edited": resume_was_edited(state),
+                                    },
+                                )
+                            except Exception as exc:
+                                secondary_errors.append(
+                                    f"Secondary dedup mark_seen error: {type(exc).__name__}"
+                                )
+
                             break
                         else:
                             # Next/Review button
@@ -1946,7 +2295,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             "[LIVE] No recognized forward/submit control found. "
                             f"Visible buttons: {label_text}"
                         )
-                        await page.close()
+                        await _safe_close_page(page)
                         return _manual_review_update(
                             state,
                             "no_next_or_submit_button",
@@ -1957,7 +2306,9 @@ async def execution_node(state: JobApplyState) -> dict:
 
                 # Clean close outside form steps loop
                 print("[LIVE] Closing job details page.")
-                await page.close()
+                close_err = await _safe_close_page(page)
+                if close_err:
+                    secondary_errors.append(close_err)
 
                 # Update trace with execution results
                 if run_tree:
@@ -1975,43 +2326,57 @@ async def execution_node(state: JobApplyState) -> dict:
             print(
                 f"✅ [LIVE] Successfully submitted application for {current_job['title']} at {current_job['company']}!"
             )
-            # Update MongoDB with submission status
-            errors = list(state.get("errors") or [])
-            try:
-                dedup = DeduplicationStore()
-                await dedup.mark_seen(
-                    current_job["job_id"],
-                    {
-                        "status": "submitted",
-                        "applied_at": datetime.now(timezone.utc),
-                        "qa_count": len(form_qa_exchanges),
-                        "resume_edited": resume_was_edited(state),
-                    },
-                )
-            except Exception as e:
-                errors.append(
-                    f"Application submitted but MongoDB update failed for {current_job['title']}: {str(e)}"
-                )
-
-            update = _applied_update(state, "submitted", form_qa_exchanges)
+            update = _applied_update(
+                state,
+                "submitted",
+                form_qa_exchanges,
+                increment_counters=should_increment_counters,
+            )
+            if secondary_errors:
+                update["errors"] = list(state.get("errors") or []) + secondary_errors
             receipt_error = await send_application_receipt(
                 telegram,
                 update["application_outcomes"][-1],
             )
             if receipt_error:
-                errors.append(receipt_error)
-            update["errors"] = errors
+                update["errors"] = list(update.get("errors") or state.get("errors") or []) + [
+                    receipt_error
+                ]
             return update
         else:
             print("❌ [LIVE] Application incomplete or failed.")
             return _failed_update(state, "Could not complete application flow", form_qa_exchanges)
 
     except AccountSafetyBarrierError as safety_err:
-        try:
-            if page is not None and not page.is_closed():
-                await page.close()
-        except Exception:
-            pass
+        if already_submitted_terminal:
+            update = _skipped_update(
+                state,
+                "already_submitted",
+                f"Job {job_id} was already marked submitted",
+                form_qa_exchanges,
+                extra={"job_id": job_id, "attempt_status": "submitted"},
+            )
+            update["errors"] = (
+                list(state.get("errors") or [])
+                + secondary_errors
+                + [f"Post-already-submitted barrier ({safety_err.detection.reason})"]
+            )
+            return update
+
+        if primary_submission_persisted:
+            update = _applied_update(
+                state,
+                "submitted",
+                form_qa_exchanges,
+                increment_counters=should_increment_counters,
+            )
+            update["errors"] = (
+                list(state.get("errors") or [])
+                + secondary_errors
+                + [f"Post-submit account safety barrier detected: {safety_err.detection.reason}"]
+            )
+            return update
+        await _safe_close_page(page)
         return _account_safety_execution_update(
             state,
             safety_err.detection,
@@ -2029,11 +2394,7 @@ async def execution_node(state: JobApplyState) -> dict:
                 "skipped": True,
             }
         )
-        try:
-            if page is not None and not page.is_closed():
-                await page.close()
-        except Exception:
-            pass
+        await _safe_close_page(page)
         try:
             await telegram.send_message(
                 f"Job skipped: {current_job['title']} at {current_job['company']}."
@@ -2048,14 +2409,64 @@ async def execution_node(state: JobApplyState) -> dict:
             {"skip_question": exc.question},
         )
     except Exception as e:
+        if already_submitted_terminal:
+            await _safe_close_page(page)
+            update = _skipped_update(
+                state,
+                "already_submitted",
+                f"Job {job_id} was already marked submitted",
+                form_qa_exchanges,
+                extra={"job_id": job_id, "attempt_status": "submitted"},
+            )
+            update["errors"] = (
+                list(state.get("errors") or [])
+                + secondary_errors
+                + [f"Post-already-submitted error ({type(e).__name__})"]
+            )
+            return update
+
+        if primary_submission_persisted:
+            await _safe_close_page(page)
+            update = _applied_update(
+                state,
+                "submitted",
+                form_qa_exchanges,
+                increment_counters=should_increment_counters,
+            )
+            update["errors"] = (
+                list(state.get("errors") or [])
+                + secondary_errors
+                + [f"Post-submit error ({type(e).__name__})"]
+            )
+            return update
+
+        if attempt_id and not submission_attempted:
+            cleaned, c_errs = await _cleanup_pre_click(
+                reason=f"unhandled_pre_click_exception:{type(e).__name__}",
+                quota_was_reserved=quota_reserved,
+            )
+            close_err = await _safe_close_page(page)
+            if close_err:
+                c_errs.append(close_err)
+            msg = f"Execution pre-click error ({type(e).__name__})"
+            if not cleaned:
+                msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
+            return _manual_review_update(
+                state,
+                "unhandled_pre_click_exception",
+                msg,
+                form_qa_exchanges,
+                extra={"cleanup_errors": c_errs, "job_id": job_id, "attempt_id": attempt_id},
+            )
+
         if submission_attempted:
             # Post-attempt exception: fail closed as ambiguous manual review with durable pause flag, never screenshot challenge pages
             try:
-                if page is not None and not page.is_closed():
+                if page is not None and hasattr(page, "is_closed") and not page.is_closed():
                     safety_check = await inspect_page_account_safety(
                         page, stage="execution_post_submit_error", fail_closed=True
                     )
-                    await page.close()
+                    await _safe_close_page(page)
                     if safety_check.detected:
                         return _account_safety_execution_update(
                             state,
@@ -2086,10 +2497,10 @@ async def execution_node(state: JobApplyState) -> dict:
         error_msg = f"Execution error for {current_job['title']}: {str(e)}"
         print(f"❌ [LIVE] Execution Error: {str(e)}")
         try:
-            if page is not None and not page.is_closed():
+            if page is not None and hasattr(page, "is_closed") and not page.is_closed():
                 safety_check = await inspect_page_account_safety(page, stage="execution_error")
                 if safety_check.detected:
-                    await page.close()
+                    await _safe_close_page(page)
                     return _account_safety_execution_update(
                         state, safety_check, current_job, form_qa_exchanges, pre_submit=True
                     )
@@ -2098,4 +2509,5 @@ async def execution_node(state: JobApplyState) -> dict:
                 )
         except Exception as screenshot_err:
             print(f"Failed to take error screenshot: {screenshot_err}")
+        await _safe_close_page(page)
         return _failed_update(state, error_msg, form_qa_exchanges)

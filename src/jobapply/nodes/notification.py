@@ -99,6 +99,12 @@ def format_session_summary(state: JobApplyState) -> str:
         lines.extend(["", "NEEDS MANUAL REVIEW"])
         for index, outcome in enumerate(manual[:10], 1):
             reason = outcome.get("reason") or outcome.get("error") or "Incomplete form"
+            extra = outcome.get("extra") or {}
+            if (
+                extra.get("ambiguous_submission")
+                or extra.get("attempt_status") == "submission_unknown"
+            ):
+                reason = f"[AMBIGUOUS SUBMISSION] {reason}"
             lines.append(f"{index}. {outcome.get('title', 'Unknown title')} — {reason}")
 
     if failed:

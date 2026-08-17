@@ -422,19 +422,26 @@ class DeduplicationStore:
         return await _consume_seen_id_cursor(cursor)
 
     async def get_daily_count(self) -> int:
-        """Count applications submitted today.
+        """Count applications submitted or reserved today.
 
         Returns:
-            Number of applications submitted today.
+            Number of applications submitted or actively reserved today.
         """
         await self.ensure_indexes()
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        return await self.collection.count_documents(
+        submitted_count = await self.collection.count_documents(
             {
                 "applied_at": {"$gte": today},
                 "status": "submitted",
             }
         )
+        try:
+            from jobapply.utils.attempts import QuotaRepository
+
+            quota_consumed = await QuotaRepository().get_daily_consumed()
+            return max(submitted_count, quota_consumed)
+        except Exception:
+            return submitted_count
 
     @classmethod
     async def close(cls) -> None:
@@ -446,3 +453,10 @@ class DeduplicationStore:
             cls._init_future = None
             cls._index_succeeded = False
             cls._index_error = None
+        try:
+            from jobapply.utils.attempts import AttemptRepository, QuotaRepository
+
+            await AttemptRepository.close()
+            await QuotaRepository.close()
+        except Exception:
+            pass

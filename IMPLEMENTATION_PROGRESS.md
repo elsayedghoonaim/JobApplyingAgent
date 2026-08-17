@@ -6,8 +6,8 @@
 | 1. Privacy, packaging, dependency lock, and CI baseline | Reviewed + committed | `7d9f269` |
 | 2. Paths, redaction, PDF hardening, and Edge isolation | Reviewed + committed | `d9fdf1e` |
 | 3. Account-safety pause behavior | Reviewed + committed | `2a3d571` |
-| 4. Search completeness and persisted filtering | Reviewed; ready to commit | This task commit |
-| 5. Idempotent attempts and atomic quotas | Queued | — |
+| 4. Search completeness and persisted filtering | Reviewed + committed | `e76895a` |
+| 5. Idempotent attempts and atomic quotas | Reviewed; ready to commit | This task commit |
 | 6. Telegram recovery and durable notifications | Queued | — |
 | 7. Execution decomposition and fixture tests | Queued | — |
 | 8. LLM/database/browser performance | Queued | — |
@@ -27,6 +27,8 @@
 - Task 3 independent gates: lock check and sync pass, Ruff format/lint pass, Pyright reports 0 issues, pytest reports 195 passed under the strict-offline harness, build and diff checks pass, and the remaining pytest warnings are expected socket-block notifications proving attempted external telemetry is denied.
 - Task 4 accepted after reviewer-directed Gemini 3.7 Mid corrections: every loaded page card is inspected independent of submission quota, persisted seen IDs are queried once per page rather than fully loaded at startup, deterministic exclusions use bounded/redacted bulk upserts, long job IDs remain collision-resistant, unique-index initialization is shared and fail-closed, and search/qualification state updates are immutable.
 - Task 4 independent gates: lock check passes, Ruff format/lint pass, Pyright reports 0 issues, pytest reports 208 passed under the strict-offline harness, focused 32-card traversal completes in about 1.6 seconds with mocked delays, build and diff checks pass, and no real browser/LinkedIn verification was performed.
+- Task 5 accepted after seven reviewer-directed Gemini 3.7 Mid corrections: exact-token application attempts transition through quota reservation and durable submission-unknown state, daily/session quotas reserve atomically and idempotently, pre-click failures release exact ownership without stranding capacity, confirmed submissions remain authoritative through secondary failures, and duplicate/resumed workers cannot create a second outcome or counter increment.
+- Task 5 independent gates: lock check and sync pass, Ruff format/lint pass, Pyright reports 0 issues, 10 focused attempt/quota tests pass, 217 remaining project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under the normal strict-offline policy, build and diff checks pass, and no real browser/LinkedIn verification was performed.
 
 ## Needs Your Eyes
 
