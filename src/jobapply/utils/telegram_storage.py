@@ -30,6 +30,7 @@ from jobapply.utils.dedup import (
     bound_string,
     canonicalize_job_id,
 )
+from jobapply.utils.mongo import MongoClientManager
 from jobapply.utils.redaction import redact_string
 
 
@@ -81,7 +82,6 @@ def make_bot_chat_key(bot_token: str, chat_id: str) -> str:
 class TelegramPersistenceManager:
     """Shared single-client manager with independent index lifecycle states."""
 
-    _client: ClassVar[Optional[AsyncIOMotorClient]] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
 
     # Separate index state for correlations and cursors
@@ -96,25 +96,26 @@ class TelegramPersistenceManager:
 
     @classmethod
     def get_client(cls) -> AsyncIOMotorClient:
-        with cls._lock:
-            if cls._client is None:
-                settings = get_settings()
-                cls._client = AsyncIOMotorClient(settings.mongodb_url)
-            return cls._client
+        return MongoClientManager.get_client()
 
     @classmethod
-    async def close(cls) -> None:
-        """Close shared MongoDB client and reset all persistence lifecycle state."""
+    def _reset_state(cls) -> None:
+        """Synchronously reset all persistence index lifecycle states."""
         with cls._lock:
-            if cls._client is not None:
-                cls._client.close()
-                cls._client = None
             cls._correlations_init_future = None
             cls._correlations_index_succeeded = False
             cls._correlations_index_error = None
             cls._outbox_init_future = None
             cls._outbox_index_succeeded = False
             cls._outbox_index_error = None
+
+    @classmethod
+    async def close(cls) -> None:
+        """Close shared MongoDB client and reset all persistence lifecycle states."""
+        await MongoClientManager.close()
+
+
+MongoClientManager.register_reset_hook(TelegramPersistenceManager._reset_state)
 
 
 class TelegramRepository:

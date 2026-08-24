@@ -9,8 +9,8 @@
 | 4. Search completeness and persisted filtering | Reviewed + committed | `e76895a` |
 | 5. Idempotent attempts and atomic quotas | Reviewed + committed | `fed25d8` |
 | 6. Telegram recovery and durable notifications | Reviewed + committed | `681a1a1` |
-| 7. Execution decomposition and fixture tests | Reviewed + ready to commit | — |
-| 8. LLM/database/browser performance | Queued | — |
+| 7. Execution decomposition and fixture tests | Reviewed + committed | `eb7320c` |
+| 8. LLM/database/browser performance | Reviewed + ready to commit | - |
 | 9. Structured observability and summaries | Queued | — |
 | 10. Doctor CLI and operator enhancements | Queued | — |
 | 11. Final coherence sweep | Queued | — |
@@ -33,6 +33,8 @@
 - Task 6 independent gates: lock check and sync pass, Ruff format/lint pass across 56 files, Pyright reports 0 issues, 32 focused Telegram recovery/outbox tests pass, 118 affected node/workflow tests pass, 249 project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under the normal strict-offline policy, sdist and wheel builds succeed, and no real Telegram or LinkedIn verification was performed.
 - Task 7 accepted after six reviewer-directed Gemini 3.7 Mid corrections following one externally interrupted/resumed relay: the execution monolith is decomposed into one-way planning, control, navigation, Telegram-Q&A, and outcome modules; legacy imports, signatures, and test patch points remain compatible; required-field inspection fails closed before Next/Review/Submit with bounded redacted evidence; and deterministic local HTML fixtures cover text/select/radio/hidden/detached/navigation/submission/external-assessment behavior without browser binaries or network access.
 - Task 7 independent gates: lock check and sync pass, Ruff format/lint pass across 63 files, Pyright reports 0 issues, 164 focused fixture/workflow/safety/idempotency/Telegram tests pass, 263 project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under the normal strict-offline policy, sdist and wheel builds succeed, and no real browser, Telegram, or LinkedIn verification was performed.
+- Task 8 accepted after four reviewer-directed Gemini 3.7 Mid correction passes: search performs no parser LLM call; qualification combines scoring and structured extraction into one bounded response with deterministic post-analysis language exclusion; profile/resume sources use bounded digest-aware process-local caches; Mongo repositories share one condition-synchronized owned client with independent fail-closed index state; and LinkedIn card loading stops adaptively on bounded DOM stability.
+- Task 8 independent gates: diff and lock checks pass, Ruff format/lint pass across 66 files, Pyright reports 0 issues, 156 focused performance/search/workflow/idempotency/Telegram tests pass in 35.49 seconds without unexpected socket warnings, 282 project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under normal strict-offline policy, dependency sync and sdist/wheel builds succeed, and no live LLM, MongoDB, browser, Telegram, or LinkedIn verification was performed.
 
 ## Needs Your Eyes
 

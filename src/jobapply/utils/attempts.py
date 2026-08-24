@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar, Optional
 from uuid import uuid4
 
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
 from jobapply.models.application import (
@@ -24,6 +23,7 @@ from jobapply.utils.dedup import (
     bound_string,
     canonicalize_job_id,
 )
+from jobapply.utils.mongo import MongoClientManager
 
 
 class AttemptError(RuntimeError):
@@ -126,7 +126,6 @@ def validate_attempt_transition(
 class AttemptRepository:
     """Repository for managing idempotent application attempts in MongoDB."""
 
-    _client: ClassVar[Optional[AsyncIOMotorClient]] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
     _init_future: ClassVar[Optional[concurrent.futures.Future]] = None
     _index_succeeded: ClassVar[bool] = False
@@ -135,9 +134,7 @@ class AttemptRepository:
     def __init__(self):
         """Initialize attempt repository with MongoDB connection."""
         settings = get_settings()
-        if self.__class__._client is None:
-            self.__class__._client = AsyncIOMotorClient(settings.mongodb_url)
-        self.client = self.__class__._client
+        self.client = MongoClientManager.get_client()
         self.collection = self.client[settings.mongodb_db][settings.application_attempts_collection]
 
     async def ensure_indexes(self) -> bool:
@@ -623,21 +620,25 @@ class AttemptRepository:
         return matched > 0
 
     @classmethod
-    async def close(cls) -> None:
-        """Close shared MongoDB client and reset lifecycle state."""
+    def _reset_state(cls) -> None:
+        """Synchronously reset index lifecycle state."""
         with cls._lock:
-            if cls._client is not None:
-                cls._client.close()
-                cls._client = None
             cls._init_future = None
             cls._index_succeeded = False
             cls._index_error = None
+
+    @classmethod
+    async def close(cls) -> None:
+        """Close shared MongoDB client and reset all repository lifecycles."""
+        await MongoClientManager.close()
+
+
+MongoClientManager.register_reset_hook(AttemptRepository._reset_state)
 
 
 class QuotaRepository:
     """Repository for atomic conditional daily and per-session quota reservations."""
 
-    _client: ClassVar[Optional[AsyncIOMotorClient]] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
     _init_future: ClassVar[Optional[concurrent.futures.Future]] = None
     _index_succeeded: ClassVar[bool] = False
@@ -646,9 +647,7 @@ class QuotaRepository:
     def __init__(self):
         """Initialize quota repository with MongoDB connection."""
         settings = get_settings()
-        if self.__class__._client is None:
-            self.__class__._client = AsyncIOMotorClient(settings.mongodb_url)
-        self.client = self.__class__._client
+        self.client = MongoClientManager.get_client()
         self.collection = self.client[settings.mongodb_db][settings.application_quotas_collection]
 
     async def ensure_indexes(self) -> bool:
@@ -1110,12 +1109,17 @@ class QuotaRepository:
         return res
 
     @classmethod
-    async def close(cls) -> None:
-        """Close shared MongoDB client and reset lifecycle state."""
+    def _reset_state(cls) -> None:
+        """Synchronously reset index lifecycle state."""
         with cls._lock:
-            if cls._client is not None:
-                cls._client.close()
-                cls._client = None
             cls._init_future = None
             cls._index_succeeded = False
             cls._index_error = None
+
+    @classmethod
+    async def close(cls) -> None:
+        """Close shared MongoDB client and reset all repository lifecycles."""
+        await MongoClientManager.close()
+
+
+MongoClientManager.register_reset_hook(QuotaRepository._reset_state)

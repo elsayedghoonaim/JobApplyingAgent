@@ -9,10 +9,10 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from typing import Any, ClassVar, cast
 
-from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import UpdateOne
 
 from jobapply.settings import get_settings
+from jobapply.utils.mongo import MongoClientManager
 from jobapply.utils.redaction import redact_data, redact_string
 
 
@@ -200,7 +200,6 @@ async def _consume_seen_id_cursor(cursor: Any) -> set[str]:
 class DeduplicationStore:
     """Persistent tracking of seen job IDs across sessions."""
 
-    _client: ClassVar[AsyncIOMotorClient | None] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
     _init_future: ClassVar[concurrent.futures.Future | None] = None
     _index_succeeded: ClassVar[bool] = False
@@ -209,9 +208,7 @@ class DeduplicationStore:
     def __init__(self):
         """Initialize deduplication store with MongoDB connection."""
         settings = get_settings()
-        if self.__class__._client is None:
-            self.__class__._client = AsyncIOMotorClient(settings.mongodb_url)
-        self.client = self.__class__._client
+        self.client = MongoClientManager.get_client()
         self.collection = self.client[settings.mongodb_db][settings.seen_jobs_collection]
 
     async def ensure_indexes(self) -> bool:
@@ -444,25 +441,17 @@ class DeduplicationStore:
             return submitted_count
 
     @classmethod
-    async def close(cls) -> None:
-        """Close the shared MongoDB client at application shutdown and reset lifecycle state."""
+    def _reset_state(cls) -> None:
+        """Synchronously reset index lifecycle state."""
         with cls._lock:
-            if cls._client is not None:
-                cls._client.close()
-                cls._client = None
             cls._init_future = None
             cls._index_succeeded = False
             cls._index_error = None
-        try:
-            from jobapply.utils.attempts import AttemptRepository, QuotaRepository
-            from jobapply.utils.telegram_storage import (
-                NotificationOutboxRepository,
-                TelegramRepository,
-            )
 
-            await AttemptRepository.close()
-            await QuotaRepository.close()
-            await TelegramRepository.close()
-            await NotificationOutboxRepository.close()
-        except Exception:
-            pass
+    @classmethod
+    async def close(cls) -> None:
+        """Close the shared MongoDB client at application shutdown and reset all lifecycle states."""
+        await MongoClientManager.close()
+
+
+MongoClientManager.register_reset_hook(DeduplicationStore._reset_state)

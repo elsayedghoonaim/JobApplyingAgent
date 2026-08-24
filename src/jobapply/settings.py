@@ -85,8 +85,17 @@ class Settings(BaseSettings):
     outbox_max_backoff_seconds: int = Field(default=300, ge=1)
     outbox_lease_seconds: int = Field(default=60, ge=5)
 
-    # Search
+    # LLM Prompt Bounding
+    max_job_description_chars: int = Field(default=8000, ge=500, le=50000)
+    max_clean_description_chars: int = Field(default=3500, ge=500, le=10000)
+    max_profile_context_chars: int = Field(default=6000, ge=500, le=50000)
+    max_resume_context_chars: int = Field(default=8000, ge=500, le=50000)
+
+    # Search & Card Stability Loader
     search_queries: str = "Machine Learning Engineer,AI Engineer"
+    search_max_scroll_rounds: int = Field(default=5, ge=1, le=20)
+    search_card_stability_rounds: int = Field(default=2, ge=1, le=10)
+    search_scroll_delay_seconds: float = Field(default=0.3, ge=0.05, le=5.0)
 
     @property
     def search_queries_list(self) -> list[str]:

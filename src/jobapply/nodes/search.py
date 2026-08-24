@@ -17,12 +17,11 @@ from jobapply.utils.account_safety import (
 from jobapply.utils.browser import get_randomized_delay, managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
-    find_disallowed_required_languages,
     is_senior_position_title,
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
-from jobapply.utils.prompts import get_job_parser_prompt
+from jobapply.utils.prompts import get_job_parser_prompt, truncate_head_tail
 from jobapply.utils.tracing import get_search_metadata
 
 
@@ -178,8 +177,43 @@ async def parse_job_description(raw_description: str) -> dict:
         }
 
 
+async def get_loaded_card_ids(page) -> list[str]:
+    """Retrieve all rendered job card IDs currently in the DOM without swallowing exceptions."""
+    cards = await page.query_selector_all("li[data-occludable-job-id]")
+    ids: list[str] = []
+    for c in cards:
+        jid = await c.get_attribute("data-occludable-job-id")
+        if jid:
+            ids.append(jid)
+    return ids
+
+
+async def load_search_cards_adaptively(
+    page,
+    max_scroll_rounds: int = 5,
+    stability_rounds: int = 2,
+    scroll_delay_seconds: float = 0.3,
+) -> None:
+    """Scroll adaptively until the rendered job card set stabilizes or maximum rounds are reached."""
+    seen_ids = await get_loaded_card_ids(page)
+    stable_count = 0
+
+    for _ in range(max_scroll_rounds):
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(scroll_delay_seconds)
+        current_ids = await get_loaded_card_ids(page)
+
+        if len(current_ids) > len(seen_ids) or set(current_ids) != set(seen_ids):
+            seen_ids = current_ids
+            stable_count = 0
+        else:
+            stable_count += 1
+            if stable_count >= stability_rounds:
+                break
+
+
 async def search_node(state: JobApplyState) -> dict:
-    """Fetch job listings from LinkedIn for current query + page.
+    """Fetch job listings from LinkedIn for current query + page without making LLM calls.
 
     Does NOT iterate or pick jobs - just fetches and returns listings.
 
@@ -220,20 +254,22 @@ async def search_node(state: JobApplyState) -> dict:
                     page, stage="search_navigation", http_status=http_status
                 )
 
-                # Wait for job cards to load (updated selector for new LinkedIn structure)
+                # Wait for job cards to load
                 try:
-                    await page.wait_for_selector(".scaffold-layout__list", timeout=10000)
-                    # Additional wait for job cards to populate
-                    await page.wait_for_selector("li[data-occludable-job-id]", timeout=10000)
+                    await page.wait_for_selector(
+                        ".scaffold-layout__list", timeout=settings.job_load_timeout_ms
+                    )
+                    await page.wait_for_selector(
+                        "li[data-occludable-job-id]", timeout=settings.job_load_timeout_ms
+                    )
 
-                    # Scroll to load all job cards (LinkedIn lazy loads)
-                    print("[DEBUG] Scrolling to load all jobs...")
-                    for scroll_attempt in range(3):  # Scroll 3 times to load more cards
-                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        await asyncio.sleep(1.5)
-
-                    # Wait a bit more for lazy-loaded cards
-                    await asyncio.sleep(2)
+                    # Adaptively scroll to load lazy-loaded cards
+                    await load_search_cards_adaptively(
+                        page,
+                        max_scroll_rounds=settings.search_max_scroll_rounds,
+                        stability_rounds=settings.search_card_stability_rounds,
+                        scroll_delay_seconds=settings.search_scroll_delay_seconds,
+                    )
                 except Exception:
                     # No results found
                     print(f"❌ No results found for '{query}' page {page_num}")
@@ -422,36 +458,9 @@ async def search_node(state: JobApplyState) -> dict:
                         except Exception:
                             raw_description = "Description not available"
 
-                        # Parse job description to extract structured fields
-                        parsed = await parse_job_description(raw_description)
-
-                        disallowed_languages = find_disallowed_required_languages(
-                            {
-                                "description": raw_description,
-                                "required_languages": parsed.get("required_languages", []),
-                            }
+                        bounded_description = truncate_head_tail(
+                            raw_description, max_chars=settings.max_job_description_chars
                         )
-                        if disallowed_languages:
-                            lang_str = ", ".join(disallowed_languages)
-                            print(
-                                f"[DEBUG] Skipping job {job_id}; required language(s) "
-                                f"not allowed: {lang_str}"
-                            )
-                            extracted_job_ids.add(job_id)
-                            updated_seen_ids.add(job_id)
-                            already_seen.add(job_id)
-                            exclusions_to_persist.append(
-                                {
-                                    "job_id": job_id,
-                                    "title": title,
-                                    "company": company,
-                                    "location": location,
-                                    "status": "not_qualified",
-                                    "reason": f"Disallowed required language: {lang_str}",
-                                    "disallowed_languages": disallowed_languages,
-                                }
-                            )
-                            continue
 
                         extracted_job_ids.add(job_id)
                         job_listings.append(
@@ -461,13 +470,7 @@ async def search_node(state: JobApplyState) -> dict:
                                 "company": company,
                                 "location": location,
                                 "url": f"https://www.linkedin.com/jobs/view/{job_id}",
-                                "description": parsed.get("clean_description", raw_description),
-                                "parsed_location": parsed.get("parsed_location"),
-                                "duration": parsed.get("duration"),
-                                "work_type": parsed.get("work_type"),
-                                "responsibilities": parsed.get("responsibilities", []),
-                                "requirements": parsed.get("requirements", []),
-                                "required_languages": parsed.get("required_languages", []),
+                                "description": bounded_description,
                             }
                         )
                         print(f"✅ Extracted job {job_id}: {title} at {company}")

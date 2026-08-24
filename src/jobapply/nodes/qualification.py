@@ -1,27 +1,30 @@
-"""Qualification node - LLM job-fit evaluation."""
+"""Qualification node - LLM job-fit evaluation with combined structured description extraction."""
 
-import yaml
 from langsmith.run_helpers import trace
 
-from jobapply.models.job import QualificationResult
+from jobapply.models.job import CombinedJobAnalysis
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.dedup import DeduplicationStore
-from jobapply.utils.job_filters import get_job_exclusion_reason
+from jobapply.utils.job_filters import (
+    find_disallowed_required_languages,
+    is_senior_position_title,
+)
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
-from jobapply.utils.prompts import get_qualification_prompt
+from jobapply.utils.prompts import get_qualification_prompt, truncate_head_tail
+from jobapply.utils.source_cache import get_cached_profile
 from jobapply.utils.tracing import get_qualification_metadata, get_safe_job_metadata
 
 
 async def qualification_node(state: JobApplyState) -> dict:
-    """Evaluate job fit via LLM with structured output.
+    """Evaluate job fit via single combined LLM call with structured output.
 
     Args:
         state: Current graph state.
 
     Returns:
-        State updates dict with qualification result.
+        State updates dict with qualification result and updated current_job.
     """
     settings = get_settings()
     current_job = state.get("current_job")
@@ -37,8 +40,8 @@ async def qualification_node(state: JobApplyState) -> dict:
             }
         }
 
-    exclusion_reason = get_job_exclusion_reason(current_job)
-    if exclusion_reason:
+    if is_senior_position_title(current_job.get("title")):
+        exclusion_reason = "Senior-level position excluded by user preference"
         print(f"⛔ EXCLUDED - {exclusion_reason} | {current_job.get('title')}")
         seen_job_ids = set(state.get("seen_job_ids") or set())
         errors = list(state.get("errors") or [])
@@ -81,24 +84,25 @@ async def qualification_node(state: JobApplyState) -> dict:
             "errors": errors,
         }
 
-    # Load user profile
-    profile_path = get_settings().resolve_data_path("profile.yaml")
-    with open(profile_path, "r", encoding="utf-8") as f:
-        profile_data = yaml.safe_load(f)
-    profile_text = yaml.dump(profile_data)
+    # Load user profile from process-local cache
+    errors = list(state.get("errors") or [])
+    try:
+        _, profile_text = get_cached_profile()
+    except Exception as e:
+        profile_text = ""
+        errors.append(f"Profile load failed for qualification: {type(e).__name__}")
 
     # Build prompt
     prompt = get_qualification_prompt(profile_text, current_job)
 
-    # Call LLM with structured output
+    # Call LLM with combined structured output and 4096 token output budget
     llm = get_llm(
         temperature=0.2,
-        max_output_tokens=2048,
+        max_output_tokens=4096,
         response_mime_type="application/json",
-        response_json_schema=QualificationResult.model_json_schema(),
+        response_json_schema=CombinedJobAnalysis.model_json_schema(),
     )
 
-    errors = list(state.get("errors") or [])
     try:
         async with trace(
             "llm_qualification_scoring",
@@ -113,31 +117,91 @@ async def qualification_node(state: JobApplyState) -> dict:
 
             # Clean markdown formatting if present
             result_dict = extract_json_object(response_text)
-            result = QualificationResult(**result_dict)
+            result = CombinedJobAnalysis(**result_dict)
 
-            # Check threshold
-            qualified = result.score >= settings.qualification_threshold
+            # Bounded raw description from input
+            raw_job_description = current_job.get("description", "")
+            bounded_raw_description = truncate_head_tail(
+                raw_job_description, max_chars=settings.max_job_description_chars
+            )
 
-            if qualified:
+            # Apply deterministic required-language exclusion after combined analysis using BOTH:
+            # 1. original bounded raw job description (not model-produced clean_description)
+            # 2. CombinedJobAnalysis.required_languages
+            disallowed_languages = find_disallowed_required_languages(
+                {
+                    "description": bounded_raw_description,
+                    "required_languages": result.required_languages,
+                }
+            )
+
+            if disallowed_languages:
+                lang_str = ", ".join(disallowed_languages)
+                exclusion_reason = f"Disallowed required language: {lang_str}"
+                qualified = False
+                effective_score = 0.0
+                effective_reasoning = (
+                    f"{result.reasoning} | {exclusion_reason}"
+                    if result.reasoning
+                    else exclusion_reason
+                )
+                effective_gaps = list(result.gaps) + [exclusion_reason]
+                status = "not_qualified"
                 print(
-                    f"✅ QUALIFIED - Score: {result.score:.2f} | {current_job.get('title')} at {current_job.get('company')}"
+                    f"⛔ Disallowed language(s) required ({lang_str}) | {current_job.get('title')}"
                 )
             else:
-                print(
-                    f"❌ Not qualified - Score: {result.score:.2f} (threshold: {settings.qualification_threshold}) | {current_job.get('title')}"
-                )
+                qualified = result.score >= settings.qualification_threshold
+                effective_score = result.score
+                effective_reasoning = result.reasoning
+                effective_gaps = result.gaps
+                status = "qualified" if qualified else "not_qualified"
+                exclusion_reason = None
+
+                if qualified:
+                    print(
+                        f"✅ QUALIFIED - Score: {effective_score:.2f} | {current_job.get('title')} at {current_job.get('company')}"
+                    )
+                else:
+                    print(
+                        f"❌ Not qualified - Score: {effective_score:.2f} (threshold: {settings.qualification_threshold}) | {current_job.get('title')}"
+                    )
 
             # Update trace with qualification result
             if run_tree:
                 run_tree.metadata.update(
                     get_qualification_metadata(
                         qualified=qualified,
-                        score=result.score,
+                        score=effective_score,
                         threshold=settings.qualification_threshold,
                         key_matches_count=len(result.key_matches),
-                        gaps_count=len(result.gaps),
+                        gaps_count=len(effective_gaps),
                     )
                 )
+
+        # Bound clean_description before storing in current_job or MongoDB
+        if result.clean_description:
+            bounded_clean_description = truncate_head_tail(
+                result.clean_description, max_chars=settings.max_clean_description_chars
+            )
+        else:
+            bounded_clean_description = bounded_raw_description
+
+        # Build immutable updated current_job with extracted structured fields
+        updated_job = {
+            **current_job,
+            "description": bounded_clean_description,
+            "parsed_location": result.parsed_location or current_job.get("parsed_location"),
+            "duration": result.duration or current_job.get("duration"),
+            "work_type": result.work_type or current_job.get("work_type"),
+            "responsibilities": list(
+                result.responsibilities or current_job.get("responsibilities") or []
+            ),
+            "requirements": list(result.requirements or current_job.get("requirements") or []),
+            "required_languages": list(
+                result.required_languages or current_job.get("required_languages") or []
+            ),
+        }
 
         # Mark job as seen in dedup store with full details
         try:
@@ -152,27 +216,33 @@ async def qualification_node(state: JobApplyState) -> dict:
                     "company": current_job.get("company"),
                     "location": current_job.get("location"),
                     "url": current_job.get("url"),
-                    "description": current_job.get("description"),
+                    "description": updated_job["description"],
                     "job_summary": result.job_summary,
-                    "qualification_score": result.score,
-                    "qualification_reasoning": result.reasoning,
+                    "qualification_score": effective_score,
+                    "qualification_reasoning": effective_reasoning,
                     "key_matches": result.key_matches,
-                    "gaps": result.gaps,
-                    "status": "qualified" if qualified else "not_qualified",
+                    "gaps": effective_gaps,
+                    "status": status,
                 }
 
-                parsed_location = current_job.get("parsed_location")
-                if parsed_location and parsed_location != current_job.get("location"):
-                    job_data["parsed_location"] = parsed_location
+                if exclusion_reason:
+                    job_data["reason"] = exclusion_reason
+                if disallowed_languages:
+                    job_data["disallowed_languages"] = disallowed_languages
 
-                if current_job.get("duration"):
-                    job_data["duration"] = current_job["duration"]
-                if current_job.get("work_type"):
-                    job_data["work_type"] = current_job["work_type"]
-                if current_job.get("responsibilities"):
-                    job_data["responsibilities"] = current_job["responsibilities"]
-                if current_job.get("requirements"):
-                    job_data["requirements"] = current_job["requirements"]
+                if result.parsed_location and result.parsed_location != current_job.get("location"):
+                    job_data["parsed_location"] = result.parsed_location
+
+                if result.duration:
+                    job_data["duration"] = result.duration
+                if result.work_type:
+                    job_data["work_type"] = result.work_type
+                if result.responsibilities:
+                    job_data["responsibilities"] = result.responsibilities
+                if result.requirements:
+                    job_data["requirements"] = result.requirements
+                if result.required_languages:
+                    job_data["required_languages"] = result.required_languages
 
                 await dedup.mark_seen(current_job["job_id"], job_data)
         except Exception as store_err:
@@ -199,12 +269,13 @@ async def qualification_node(state: JobApplyState) -> dict:
         return {
             "qualification_result": {
                 "qualified": qualified,
-                "score": result.score,
-                "reasoning": result.reasoning,
+                "score": effective_score,
+                "reasoning": effective_reasoning,
                 "key_matches": result.key_matches,
-                "gaps": result.gaps,
+                "gaps": effective_gaps,
                 "job_summary": result.job_summary,
             },
+            "current_job": updated_job,
             "seen_job_ids": seen_job_ids,
             "jobs_evaluated_count": jobs_evaluated,
             "qualified_jobs_count": qualified_jobs,

@@ -397,23 +397,23 @@ async def test_deterministic_exclusions_persisted_and_transient_failures_not_per
     state = _base_state()
     result = await search_node(state)
 
-    assert len(result["job_listings"]) == 1
-    assert result["job_listings"][0]["job_id"] == "valid_1"
+    # In single-shot search->qualification, search extracts non-senior non-applied cards for qualification
+    assert len(result["job_listings"]) == 2
+    extracted_ids = {j["job_id"] for j in result["job_listings"]}
+    assert extracted_ids == {"lang_1", "valid_1"}
 
-    # Verify exclusions persisted in bulk
+    # Verify search exclusions (applied and senior) persisted in bulk
     mock_store.mark_seen_many.assert_awaited_once()
     persisted_items = mock_store.mark_seen_many.call_args[0][0]
     persisted_ids = {item["job_id"] for item in persisted_items}
     assert "already_applied_1" in persisted_ids
     assert "senior_1" in persisted_ids
-    assert "lang_1" in persisted_ids
     assert "dom_fail_1" not in persisted_ids
     assert "valid_1" not in persisted_ids
 
-    # Returned seen_job_ids contains excluded IDs so they are not re-inspected
+    # Returned seen_job_ids contains search-excluded IDs so they are not re-inspected
     assert "already_applied_1" in result["seen_job_ids"]
     assert "senior_1" in result["seen_job_ids"]
-    assert "lang_1" in result["seen_job_ids"]
     assert "valid_1" not in result["seen_job_ids"]
 
 

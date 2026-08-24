@@ -816,12 +816,11 @@ async def test_qualification_exclusion_bypasses_llm(mock_get_llm):
     state = _base_state(
         current_job={
             "job_id": "excluded-42",
-            "title": "Software Engineer",
+            "title": "Senior Staff Architect",
             "company": "Acme",
             "location": "Remote",
             "url": "https://example.test/job/excluded-42",
-            "description": "Fluency in French is mandatory.",
-            "required_languages": ["French"],
+            "description": "Senior architecture role.",
         },
         seen_job_ids=set(),
         jobs_evaluated_count=0,
@@ -832,7 +831,7 @@ async def test_qualification_exclusion_bypasses_llm(mock_get_llm):
     result = await qualification_node(state)
 
     assert result["qualification_result"]["qualified"] is False
-    assert "French" in result["qualification_result"]["reasoning"]
+    assert "Senior-level position excluded" in result["qualification_result"]["reasoning"]
     assert result["not_qualified_jobs_count"] == 1
     assert "excluded-42" in result["seen_job_ids"]
     mock_get_llm.assert_not_called()
@@ -931,7 +930,25 @@ async def test_telegram_poll_failure_redacts_credentials():
     context = AsyncMock()
     context.__aenter__.return_value = client
     context.__aexit__.return_value = False
-    with patch("jobapply.utils.telegram.httpx.AsyncClient", return_value=context):
+
+    mock_update_res = MagicMock()
+    mock_update_res.matched_count = 1
+    mock_update_res.modified_count = 1
+
+    mock_collection = AsyncMock()
+    mock_collection.create_index = AsyncMock(return_value="index_created")
+    mock_collection.find_one = AsyncMock(return_value=None)
+    mock_collection.update_one = AsyncMock(return_value=mock_update_res)
+    mock_collection.insert_one = AsyncMock(return_value=MagicMock(inserted_id="1"))
+    mock_db = MagicMock()
+    mock_db.__getitem__.return_value = mock_collection
+    mock_motor = MagicMock()
+    mock_motor.__getitem__.return_value = mock_db
+
+    with (
+        patch("jobapply.utils.telegram.httpx.AsyncClient", return_value=context),
+        patch("jobapply.utils.mongo.AsyncIOMotorClient", return_value=mock_motor),
+    ):
         with pytest.raises(RuntimeError) as exc_info:
             await TelegramClient().wait_for_correlated_reply("nonce123", timeout=10)
         assert fake_token not in str(exc_info.value)

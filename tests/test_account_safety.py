@@ -423,6 +423,11 @@ async def test_search_node_pauses_before_card_click_and_never_clicks(
 @patch("jobapply.nodes.execution.TelegramClient")
 @patch("jobapply.nodes.execution.os.path.exists", return_value=True)
 @patch("yaml.safe_load", return_value={})
+@patch.object(
+    AttemptRepository,
+    "preflight_check",
+    AsyncMock(return_value=AttemptPreflightResult(can_proceed=True)),
+)
 async def test_execution_node_pauses_before_easy_apply_click(
     mock_yaml, mock_exists, mock_telegram_class, mock_managed_browser
 ):

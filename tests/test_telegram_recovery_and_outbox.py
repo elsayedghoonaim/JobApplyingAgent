@@ -19,6 +19,7 @@ from jobapply.nodes.execution import (
     ask_user_for_question,
 )
 from jobapply.nodes.notification import notification_node
+from jobapply.utils.mongo import MongoClientManager
 from jobapply.utils.telegram import TelegramClient
 from jobapply.utils.telegram_storage import (
     NotificationOutboxRepository,
@@ -242,15 +243,29 @@ class InMemoryTelegramCollection:
 
 
 @pytest.fixture(autouse=True)
-def reset_telegram_repositories():
-    TelegramPersistenceManager._client = None
-    TelegramPersistenceManager._correlations_init_future = None
-    TelegramPersistenceManager._correlations_index_succeeded = False
-    TelegramPersistenceManager._correlations_index_error = None
-    TelegramPersistenceManager._outbox_init_future = None
-    TelegramPersistenceManager._outbox_index_succeeded = False
-    TelegramPersistenceManager._outbox_index_error = None
-    yield
+async def reset_telegram_repositories():
+    await MongoClientManager.close()
+    mock_db = MagicMock()
+    mock_motor = MagicMock()
+    mock_motor.__getitem__.return_value = mock_db
+    mock_correlations = InMemoryTelegramCollection(key_field="correlation_key")
+    mock_cursors = InMemoryTelegramCollection(key_field="bot_chat_key")
+    mock_outbox = InMemoryTelegramCollection(key_field="idempotency_key")
+
+    def get_col(name):
+        if "cursor" in name:
+            return mock_cursors
+        if "outbox" in name:
+            return mock_outbox
+        return mock_correlations
+
+    mock_db.__getitem__.side_effect = get_col
+
+    with patch("jobapply.utils.mongo.AsyncIOMotorClient", return_value=mock_motor):
+        try:
+            yield
+        finally:
+            await MongoClientManager.close()
 
 
 @pytest.mark.asyncio

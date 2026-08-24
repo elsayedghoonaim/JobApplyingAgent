@@ -1,6 +1,5 @@
 """Generation node - cover letter + urgency check."""
 
-import yaml
 from langsmith.run_helpers import trace
 
 from jobapply.settings import get_settings
@@ -10,6 +9,10 @@ from jobapply.utils.llm import get_llm
 from jobapply.utils.paths import get_cover_letter_path
 from jobapply.utils.prompts import get_cover_letter_prompt, get_urgency_check_prompt
 from jobapply.utils.redaction import redact_string
+from jobapply.utils.source_cache import (
+    get_cached_profile,
+    get_cached_resume_markdown,
+)
 from jobapply.utils.tracing import get_safe_job_metadata
 
 
@@ -52,16 +55,13 @@ async def generation_node(state: JobApplyState) -> dict:
 
     profile_text = ""
     try:
-        with open(_data_path("profile.yaml"), "r", encoding="utf-8") as f:
-            profile_data = yaml.safe_load(f) or {}
-        profile_text = yaml.dump(profile_data)
+        _, profile_text = get_cached_profile()
     except Exception as e:
         errors.append(f"Profile load failed for generation: {redact_string(str(e))}")
 
     resume_text = ""
     try:
-        with open(_data_path("resume.md"), "r", encoding="utf-8") as f:
-            resume_text = f.read()
+        resume_text = get_cached_resume_markdown()
     except Exception as e:
         errors.append(f"Resume markdown load failed for generation: {redact_string(str(e))}")
 
