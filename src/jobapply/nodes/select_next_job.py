@@ -1,6 +1,7 @@
 """Select next job node - iterator/router logic."""
 
 from jobapply.state import JobApplyState
+from jobapply.utils.observability import log_event
 
 
 async def select_next_job_node(state: JobApplyState) -> dict:
@@ -31,14 +32,26 @@ async def select_next_job_node(state: JobApplyState) -> dict:
         job_id = job.get("job_id")
 
         if job_id not in seen:
-            print(f"👉 Processing job: {job.get('title')} at {job.get('company')}")
+            log_event(
+                "info",
+                "select.job_selected",
+                f"👉 Processing job: {job.get('title')} at {job.get('company')}",
+                run_id=str(state.get("run_id") or "") or None,
+                job_id=job_id,
+                node="select_next_job_node",
+            )
             return {
                 "current_job_index": i + 1,  # advance past this job
                 "current_job": job,
             }
         else:
-            print(
-                f"⏭️  Skipping already-seen job {job_id}: {job.get('title')} at {job.get('company')}"
+            log_event(
+                "debug",
+                "select.job_already_seen",
+                f"⏭️  Skipping already-seen job {job_id}: {job.get('title')} at {job.get('company')}",
+                run_id=str(state.get("run_id") or "") or None,
+                job_id=job_id,
+                node="select_next_job_node",
             )
 
     # No unseen jobs remain — router will decide next action

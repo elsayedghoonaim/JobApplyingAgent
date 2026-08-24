@@ -21,6 +21,10 @@ _GENERIC_URL_SECRET_QUERY_RE = re.compile(
 _STANDALONE_GOOGLE_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b")
 _STANDALONE_TELEGRAM_TOKEN_RE = re.compile(r"\b[0-9]{8,12}:[A-Za-z0-9_-]{20,}\b")
 _MONGODB_SCHEME_RE = re.compile(r"(?i)\b(mongodb(?:\+srv)?://)([^\s\"'<>/?#]+)([/#'?][^\s\"'<>]*)?")
+_CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|"
+    r"client[_-]?secret|bot[_-]?token)\b(\s*[=:]\s*)([^\s&\"']+)"
+)
 
 # Exact normalized sensitive key names
 _EXACT_SENSITIVE_KEYS: Set[str] = {
@@ -94,6 +98,39 @@ def _get_dynamic_secret_literals() -> list[str]:
     return sorted(secrets, key=len, reverse=True)
 
 
+# Credential-bearing key suffixes (component forms such as database_password).
+# Suffix matching avoids broad substring rules that would redact harmless
+# fields like token_count or password_policy.
+_SENSITIVE_KEY_SUFFIXES = (
+    "_password",
+    "_passwd",
+    "_pwd",
+    "_secret",
+    "_api_key",
+    "_access_token",
+    "_auth_token",
+    "_bot_token",
+    "_client_secret",
+    "_private_key",
+    "_secret_key",
+)
+
+
+def is_sensitive_key(key: str) -> bool:
+    """Return True when a normalized mapping key denotes sensitive credentials.
+
+    Recognizes exact credential key names plus component/suffix forms such as
+    ``database_password`` or ``service_access_token``, while leaving harmless
+    keys like ``token_count`` or ``password_policy`` untouched.
+    """
+    if not isinstance(key, str):
+        return False
+    normalized = key.strip().lower().replace("-", "_")
+    if normalized in _EXACT_SENSITIVE_KEYS:
+        return True
+    return any(normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES)
+
+
 def redact_string(text: str, extra_secrets: Optional[Sequence[str]] = None) -> str:
     """Redact secrets from a string idempotently.
 
@@ -111,6 +148,11 @@ def redact_string(text: str, extra_secrets: Optional[Sequence[str]] = None) -> s
 
     # Redact MongoDB URIs first to completely eliminate credentials
     result = _redact_mongodb_uri(result)
+
+    # Redact credential-style assignments (password=..., secret: ..., etc.)
+    result = _CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{_REDACTED_REPLACEMENT}", result
+    )
 
     # Redact Google API key in query strings
     result = _GOOGLE_API_KEY_QUERY_RE.sub(rf"\g<1>{_REDACTED_REPLACEMENT}", result)

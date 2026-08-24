@@ -21,6 +21,7 @@ from jobapply.utils.job_filters import (
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
+from jobapply.utils.observability import bound_text, log_event
 from jobapply.utils.prompts import get_job_parser_prompt, truncate_head_tail
 from jobapply.utils.tracing import get_search_metadata
 
@@ -164,7 +165,12 @@ async def parse_job_description(raw_description: str) -> dict:
 
         return parsed
     except Exception as e:
-        print(f"[DEBUG] Job parsing failed: {e}")
+        log_event(
+            "debug",
+            "search.description_parse_failed",
+            "Job description parsing failed; continuing with raw text",
+            exc=e,
+        )
         # Return empty structure if parsing fails
         return {
             "parsed_location": None,
@@ -233,7 +239,14 @@ async def search_node(state: JobApplyState) -> dict:
 
     job_listings = []
 
-    print(f"🔍 Searching: '{query}' (page {page_num}/{state['pages_per_query']})")
+    log_event(
+        "info",
+        "search.page_started",
+        f"🔍 Searching: '{query}' (page {page_num}/{state['pages_per_query']})",
+        run_id=str(state.get("run_id") or "") or None,
+        node="search_node",
+        details={"query_index": query_index, "page": page_num},
+    )
 
     page = None
     try:
@@ -272,7 +285,14 @@ async def search_node(state: JobApplyState) -> dict:
                     )
                 except Exception:
                     # No results found
-                    print(f"❌ No results found for '{query}' page {page_num}")
+                    log_event(
+                        "info",
+                        "search.no_results",
+                        f"❌ No results found for '{query}' page {page_num}",
+                        run_id=str(state.get("run_id") or "") or None,
+                        node="search_node",
+                        details={"page": page_num},
+                    )
                     if run_tree:
                         run_tree.metadata.update(get_search_metadata(query, page_num, 0))
                     return {
@@ -287,7 +307,14 @@ async def search_node(state: JobApplyState) -> dict:
 
                 # Extract all job cards on the page without arbitrary truncation
                 job_cards = await page.query_selector_all("li[data-occludable-job-id]")
-                print(f"[DEBUG] Found {len(job_cards)} job card elements")
+                log_event(
+                    "debug",
+                    "search.cards_found",
+                    f"Found {len(job_cards)} job card elements",
+                    run_id=str(state.get("run_id") or "") or None,
+                    node="search_node",
+                    details={"card_count": len(job_cards), "page": page_num},
+                )
 
                 # Collect all card job IDs on the page
                 page_job_ids: list[str] = []
@@ -322,24 +349,49 @@ async def search_node(state: JobApplyState) -> dict:
                         job_id = await card.get_attribute("data-occludable-job-id")
 
                         if not job_id:
-                            print("[DEBUG] Skipping card - no job_id")
+                            log_event(
+                                "debug",
+                                "search.card_missing_id",
+                                "Skipping card with no job_id",
+                                run_id=str(state.get("run_id") or "") or None,
+                                node="search_node",
+                            )
                             continue
 
                         # Check if already seen in previous runs/sessions or state
                         if job_id in already_seen:
-                            print(f"[DEBUG] Skipping already-seen job {job_id}")
+                            log_event(
+                                "debug",
+                                "search.card_already_seen",
+                                f"Skipping already-seen job {job_id}",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
+                            )
                             continue
 
                         # Check for duplicate in current extraction
                         if job_id in extracted_job_ids:
-                            print(f"[DEBUG] Duplicate job_id {job_id} found in same page, skipping")
+                            log_event(
+                                "debug",
+                                "search.card_duplicate_in_page",
+                                f"Duplicate job_id {job_id} found in same page, skipping",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
+                            )
                             continue
 
                         applied_status = await find_applied_status_on_card(card)
                         if applied_status:
-                            print(
-                                f"[DEBUG] Skipping already-applied LinkedIn job {job_id} "
-                                f"(status: {applied_status})"
+                            log_event(
+                                "debug",
+                                "search.card_already_applied",
+                                f"Skipping already-applied LinkedIn job {job_id}",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
+                                details={"applied_status": bound_text(applied_status, 60)},
                             )
                             extracted_job_ids.add(job_id)
                             updated_seen_ids.add(job_id)
@@ -354,12 +406,18 @@ async def search_node(state: JobApplyState) -> dict:
                             )
                             continue
 
-                        # Re-query elements fresh each time to avoid detached DOM issues
                         fresh_card = await page.query_selector(
                             f"li[data-occludable-job-id='{job_id}']"
                         )
                         if not fresh_card:
-                            print(f"[DEBUG] Job {job_id} - card no longer in DOM")
+                            log_event(
+                                "debug",
+                                "search.card_detached",
+                                f"Job {job_id} card no longer in DOM",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
+                            )
                             continue
 
                         # Scroll card into view to trigger loading
@@ -393,8 +451,13 @@ async def search_node(state: JobApplyState) -> dict:
 
                         # Extract basic info from card
                         if link_elem is None or company_elem is None:
-                            print(
-                                f"[DEBUG] Job {job_id} - elements still not loaded after retries, skipping"
+                            log_event(
+                                "debug",
+                                "search.card_elements_unloaded",
+                                f"Job {job_id} elements still not loaded after retries, skipping",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
                             )
                             continue
 
@@ -410,7 +473,15 @@ async def search_node(state: JobApplyState) -> dict:
                             title = (await link_elem.inner_text()).strip()
 
                         if is_senior_position_title(title):
-                            print(f"[DEBUG] Skipping senior-level position {job_id}: {title}")
+                            log_event(
+                                "debug",
+                                "search.senior_position_excluded",
+                                f"Skipping senior-level position {job_id}",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
+                                details={"title": bound_text(title, 120)},
+                            )
                             extracted_job_ids.add(job_id)
                             updated_seen_ids.add(job_id)
                             already_seen.add(job_id)
@@ -437,7 +508,18 @@ async def search_node(state: JobApplyState) -> dict:
                             else "Unknown"
                         )
 
-                        print(f"[DEBUG] Extracting: {title} at {company}")
+                        log_event(
+                            "debug",
+                            "search.card_extracting",
+                            f"Extracting job {job_id}",
+                            run_id=str(state.get("run_id") or "") or None,
+                            job_id=job_id,
+                            node="search_node",
+                            details={
+                                "title": bound_text(title, 120),
+                                "company": bound_text(company, 120),
+                            },
+                        )
 
                         # Guard immediately BEFORE card click
                         await guard_page_account_safety(page, stage="search_pre_card_click")
@@ -473,19 +555,30 @@ async def search_node(state: JobApplyState) -> dict:
                                 "description": bounded_description,
                             }
                         )
-                        print(f"✅ Extracted job {job_id}: {title} at {company}")
+                        log_event(
+                            "info",
+                            "search.job_extracted",
+                            f"✅ Extracted job {job_id}: {title} at {company}",
+                            run_id=str(state.get("run_id") or "") or None,
+                            job_id=job_id,
+                            node="search_node",
+                        )
 
                         await asyncio.sleep(get_randomized_delay() / 2)  # Small delay between cards
 
                     except Exception as e:
                         if isinstance(e, AccountSafetyBarrierError):
                             raise e
-                        print(
-                            f"[DEBUG] Error extracting job {job_id if 'job_id' in locals() else 'unknown'}: {e}"
+                        failed_job_id = job_id if "job_id" in locals() else "unknown"
+                        log_event(
+                            "warning",
+                            "search.card_extraction_failed",
+                            f"Error extracting job {failed_job_id}",
+                            run_id=str(state.get("run_id") or "") or None,
+                            job_id=str(failed_job_id) if failed_job_id != "unknown" else None,
+                            node="search_node",
+                            exc=e,
                         )
-                        import traceback
-
-                        print(f"[DEBUG] Traceback: {traceback.format_exc()}")
                         continue
 
                 # Bulk persist all deterministic exclusions encountered on this page
@@ -493,11 +586,25 @@ async def search_node(state: JobApplyState) -> dict:
                     try:
                         await dedup.mark_seen_many(exclusions_to_persist)
                     except Exception as persist_err:
-                        print(f"[DEBUG] Failed to bulk-persist exclusions: {persist_err}")
+                        log_event(
+                            "warning",
+                            "search.exclusion_persist_failed",
+                            "Failed to bulk-persist deterministic search exclusions",
+                            run_id=str(state.get("run_id") or "") or None,
+                            node="search_node",
+                            exc=persist_err,
+                        )
 
                 await page.close()
 
-                print(f"\n✅ Found {len(job_listings)} jobs for '{query}' page {page_num}")
+                log_event(
+                    "info",
+                    "search.page_completed",
+                    f"\n✅ Found {len(job_listings)} jobs for '{query}' page {page_num}",
+                    run_id=str(state.get("run_id") or "") or None,
+                    node="search_node",
+                    details={"listing_count": len(job_listings), "page": page_num},
+                )
 
                 # Update trace with results
                 if run_tree:
@@ -526,10 +633,15 @@ async def search_node(state: JobApplyState) -> dict:
         return _account_safety_search_update(state, safety_err.detection)
     except Exception as e:
         error_msg = f"Search failed for '{query}' page {page_num}: {str(e)}"
-        print(f"[ERROR] {error_msg}")
-        import traceback
-
-        print(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
+        log_event(
+            "error",
+            "search.failed",
+            error_msg,
+            run_id=str(state.get("run_id") or "") or None,
+            node="search_node",
+            details={"query_index": query_index, "page": page_num},
+            exc=e,
+        )
         return {
             "job_listings": [],
             "current_job_index": 0,

@@ -10,6 +10,7 @@ from jobapply.models.telegram import CorrelationStatus
 from jobapply.utils.dedup import canonicalize_job_id
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
+from jobapply.utils.observability import log_event
 from jobapply.utils.telegram import TelegramClient
 
 _question_translation_cache: dict[
@@ -214,7 +215,13 @@ Rules:
                 _question_translation_cache[cache_key] = result
             return result
     except Exception as exc:
-        print(f"[LIVE] Question translation unavailable; using original text: {exc}")
+        log_event(
+            "warning",
+            "telegram_qa.translation_unavailable",
+            "Question translation unavailable; using original text",
+            node="telegram_qa",
+            exc=exc,
+        )
 
     return question_text, clean_options
 

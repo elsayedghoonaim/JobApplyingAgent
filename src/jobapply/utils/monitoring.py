@@ -4,20 +4,53 @@ import logging
 import sys
 from datetime import datetime
 
+from jobapply.utils.observability import (
+    LOGGER_NAME,
+    MAX_CONSOLE_MESSAGE_LENGTH,
+    StructuredJsonlFormatter,
+)
 from jobapply.utils.paths import get_run_output_dir, get_safe_artifact_path
 from jobapply.utils.redaction import redact_string
 
 
 class RedactingFormatter(logging.Formatter):
-    """Logging formatter that automatically scrubs sensitive credentials."""
+    """Console formatter that scrubs credentials and stays concise and bounded."""
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_string(original)
+        redacted = redact_string(original)
+        if len(redacted) > MAX_CONSOLE_MESSAGE_LENGTH:
+            redacted = redacted[: MAX_CONSOLE_MESSAGE_LENGTH - 3].rstrip() + "..."
+        return redacted
+
+
+def _detach_handlers(logger: logging.Logger) -> None:
+    """Remove all handlers and close replaced file handles safely."""
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        try:
+            handler.flush()
+        except Exception:
+            pass
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+
+def shutdown_logging(logger_name: str = LOGGER_NAME) -> None:
+    """Flush and close all handlers for the workflow logger (idempotent)."""
+    logger = logging.getLogger(logger_name)
+    _detach_handlers(logger)
 
 
 def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
     """Setup logging to both file and console with automatic secret redaction and safe paths.
+
+    File records are JSON Lines: exactly one bounded, recursively redacted JSON
+    object per line. Console output remains concise and human-readable.
+    Reconfiguration never duplicates handlers, sets ``propagate = False``, and
+    closes any previously attached handlers safely.
 
     Args:
         run_id: Current run ID for log file naming.
@@ -35,14 +68,13 @@ def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
     # Create safe log directory
     get_run_output_dir(run_id, log_dir)
 
-    # Create logger
-    logger = logging.getLogger("jobapply")
+    # Create logger with no duplicate handlers and no parent propagation
+    logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(logging.DEBUG)
-    for handler in logger.handlers:
-        handler.close()
-    logger.handlers.clear()
+    logger.propagate = False
+    _detach_handlers(logger)
 
-    # File handler (detailed logs)
+    # File handler (structured JSONL, detailed)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = get_safe_artifact_path(
         run_id=run_id,
@@ -51,10 +83,7 @@ def setup_logging(run_id: str, log_dir: str = "outputs") -> logging.Logger:
     )
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
-    file_formatter = RedactingFormatter(
-        "%(asctime)s [%(levelname)s] %(name)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    file_handler.setFormatter(file_formatter)
+    file_handler.setFormatter(StructuredJsonlFormatter())
 
     # Console handler (important messages only)
     console_handler = logging.StreamHandler(sys.stdout)

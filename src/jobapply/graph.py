@@ -19,6 +19,7 @@ from jobapply.nodes import (
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.limits import caps_reached
+from jobapply.utils.observability import log_event
 
 # ── Routing functions ──
 
@@ -121,21 +122,42 @@ async def increment_page_node(state: JobApplyState) -> dict:
     """Increment page counter before fetching next page."""
     max_jobs = state.get("max_jobs_to_evaluate")
     jobs_evaluated = state.get("jobs_evaluated_count", 0)
+    target_page = state["current_page"] + 1
+    run_id = str(state.get("run_id")) if state.get("run_id") else None
 
     if max_jobs is not None:
-        print(
-            f"📄 Moving to page {state['current_page'] + 1} (need {max_jobs - jobs_evaluated} more jobs)"
+        log_event(
+            "info",
+            "graph.page_increment",
+            f"📄 Moving to page {target_page} (need {max_jobs - jobs_evaluated} more jobs)",
+            run_id=run_id,
+            node="increment_page_node",
+            details={"target_page": target_page, "remaining_jobs": max_jobs - jobs_evaluated},
         )
     else:
-        print(f"📄 Moving to page {state['current_page'] + 1}")
+        log_event(
+            "info",
+            "graph.page_increment",
+            f"📄 Moving to page {target_page}",
+            run_id=run_id,
+            node="increment_page_node",
+            details={"target_page": target_page},
+        )
 
-    return {"current_page": state["current_page"] + 1, "search_failed": False}
+    return {"current_page": target_page, "search_failed": False}
 
 
 async def increment_query_node(state: JobApplyState) -> dict:
     """Increment query index and reset page counter."""
     next_query = state["search_queries"][state["current_query_index"] + 1]
-    print(f"🔄 Moving to next query: {next_query}")
+    log_event(
+        "info",
+        "graph.query_increment",
+        f"🔄 Moving to next query: {next_query}",
+        run_id=str(state.get("run_id")) if state.get("run_id") else None,
+        node="increment_query_node",
+        details={"next_query_index": state["current_query_index"] + 1},
+    )
     return {
         "current_query_index": state["current_query_index"] + 1,
         "current_page": 1,

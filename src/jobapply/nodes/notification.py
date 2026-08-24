@@ -4,6 +4,7 @@ from langsmith.run_helpers import trace
 
 from jobapply.models.telegram import OutboxStatus
 from jobapply.state import JobApplyState
+from jobapply.utils.observability import log_event
 from jobapply.utils.telegram import TelegramClient
 
 
@@ -185,7 +186,14 @@ async def notification_node(state: JobApplyState) -> dict:
         err_str = sanitize_evidence_string(
             f"Telegram summary notification persistence failure: {type(exc).__name__}"
         )
-        print(f"⚠️ {err_str}")
+        log_event(
+            "warning",
+            "notification.summary_persistence_failed",
+            f"⚠️ {err_str}",
+            run_id=str(state.get("run_id") or "") or None,
+            node="notification_node",
+            exc=exc,
+        )
         return {
             "notification_sent": False,
             "errors": list(state.get("errors") or []) + [err_str],

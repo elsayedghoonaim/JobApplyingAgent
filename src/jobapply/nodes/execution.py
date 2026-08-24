@@ -93,6 +93,7 @@ from jobapply.utils.browser import get_randomized_delay, managed_browser, take_e
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.limits import caps_reached
 from jobapply.utils.llm import get_llm as _default_get_llm
+from jobapply.utils.observability import bound_text, fingerprint, log_event
 from jobapply.utils.telegram import TelegramClient
 from jobapply.utils.tracing import get_execution_metadata, get_safe_job_metadata
 
@@ -410,13 +411,32 @@ async def execution_node(state: JobApplyState) -> dict:
                     )
                 )
 
-                print(
-                    f"\n🚀 [LIVE] Starting application process for '{current_job['title']}' at '{current_job['company']}'"
+                log_event(
+                    "info",
+                    "execution.started",
+                    f"\n🚀 [LIVE] Starting application process for '{current_job['title']}' at '{current_job['company']}'",
+                    run_id=run_id,
+                    job_id=job_id or None,
+                    node="execution_node",
                 )
-                print(f"🔗 [LIVE] URL: {current_job['url']}")
+                log_event(
+                    "info",
+                    "execution.job_url",
+                    f"🔗 [LIVE] URL: {current_job['url']}",
+                    run_id=run_id,
+                    job_id=job_id or None,
+                    node="execution_node",
+                )
 
                 # Navigate to job
-                print("[LIVE] Navigating to job page...")
+                log_event(
+                    "info",
+                    "execution.navigating",
+                    "[LIVE] Navigating to job page...",
+                    run_id=run_id,
+                    job_id=job_id or None,
+                    node="execution_node",
+                )
                 response = await page.goto(current_job["url"], wait_until="domcontentloaded")
                 http_status = response.status if response else None
                 await asyncio.sleep(get_randomized_delay())
@@ -434,8 +454,13 @@ async def execution_node(state: JobApplyState) -> dict:
                 except Exception:
                     applied_evidence = await find_already_applied_indicator(page)
                     if applied_evidence:
-                        print(
-                            "[LIVE] LinkedIn shows this job was already applied to. Skipping safely."
+                        log_event(
+                            "info",
+                            "execution.already_applied_indicator",
+                            "[LIVE] LinkedIn shows this job was already applied to. Skipping safely.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
                         )
                         await _safe_close_page(page)
                         update = _skipped_update(
@@ -469,7 +494,15 @@ async def execution_node(state: JobApplyState) -> dict:
                             update["errors"] = errors
                         return update
 
-                    print("❌ [LIVE] No Easy Apply button or applied status found. Skipping.")
+                    log_event(
+                        "warning",
+                        "execution.no_easy_apply",
+                        "❌ [LIVE] No Easy Apply button or applied status found. Skipping.",
+                        run_id=run_id,
+                        job_id=job_id or None,
+                        node="execution_node",
+                        outcome="skipped",
+                    )
                     await _safe_close_page(page)
                     return _skipped_update(
                         state,
@@ -482,7 +515,14 @@ async def execution_node(state: JobApplyState) -> dict:
                 await guard_page_account_safety(page, stage="execution_pre_easy_apply_click")
 
                 # Click Easy Apply
-                print("[LIVE] Clicking 'Easy Apply' button...")
+                log_event(
+                    "info",
+                    "execution.easy_apply_click",
+                    "[LIVE] Clicking 'Easy Apply' button...",
+                    run_id=run_id,
+                    job_id=job_id or None,
+                    node="execution_node",
+                )
                 await (
                     page.locator("button:has-text('Easy Apply'), button.jobs-apply-button")
                     .filter(visible=True)
@@ -496,7 +536,15 @@ async def execution_node(state: JobApplyState) -> dict:
                 # Process form steps
                 max_steps = 10  # safety limit
                 for step in range(max_steps):
-                    print(f"\n📝 [LIVE] Processing Page {step + 1}...")
+                    log_event(
+                        "info",
+                        "execution.form_step",
+                        f"\n📝 [LIVE] Processing Page {step + 1}...",
+                        run_id=run_id,
+                        job_id=job_id or None,
+                        node="execution_node",
+                        details={"step": step + 1},
+                    )
 
                     # Guard at top of each form step
                     await guard_page_account_safety(page, stage="execution_form_step_top")
@@ -517,7 +565,14 @@ async def execution_node(state: JobApplyState) -> dict:
                                 "() => document.body.innerText.substring(0, 2000)"
                             )
                             if "already applied" in body_text.lower():
-                                print("[LIVE] Already applied to this job previously.")
+                                log_event(
+                                    "info",
+                                    "execution.already_applied_body",
+                                    "[LIVE] Already applied to this job previously.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                )
                                 await _safe_close_page(page)
                                 return _skipped_update(
                                     state,
@@ -529,7 +584,14 @@ async def execution_node(state: JobApplyState) -> dict:
                                 "application submitted" in body_text.lower()
                                 or "application sent" in body_text.lower()
                             ):
-                                print("✅ [LIVE] Application was submitted successfully!")
+                                log_event(
+                                    "info",
+                                    "execution.submitted_body_detected",
+                                    "✅ [LIVE] Application was submitted successfully!",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                )
                                 application_submitted = True
                                 break
                             visible_modals = await page.evaluate("""() => {
@@ -542,21 +604,42 @@ async def execution_node(state: JobApplyState) -> dict:
                                 }));
                             }""")
                             if visible_modals:
-                                print(
-                                    f"[LIVE] DEBUG: Found {len(visible_modals)} dialog(s) on page:"
+                                log_event(
+                                    "debug",
+                                    "execution.modal_inspection",
+                                    f"[LIVE] Found {len(visible_modals)} dialog element(s) on page.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                    details={"dialog_count": len(visible_modals)},
                                 )
-                                for m in visible_modals:
-                                    print(
-                                        f"  -> <{m['tag']}> classes='{m['classes']}' visible={m['visible']} text='{m['text'][:60]}...'"
-                                    )
                             else:
-                                print("[LIVE] DEBUG: No modal/dialog elements found on page.")
-                                print(f"[LIVE] DEBUG: Page snippet: {body_text[:200]}")
+                                log_event(
+                                    "debug",
+                                    "execution.modal_inspection",
+                                    "[LIVE] No modal/dialog elements found on page.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                )
                         except Exception as dbg_err:
-                            print(f"[LIVE] DEBUG: Could not inspect page: {dbg_err}")
+                            log_event(
+                                "debug",
+                                "execution.modal_inspection_failed",
+                                "[LIVE] Could not inspect page for diagnostics.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                exc=dbg_err,
+                            )
 
-                        print(
-                            f"[LIVE] Form modal not found after {modal_timeout}ms. Ending form loop."
+                        log_event(
+                            "info",
+                            "execution.modal_timeout",
+                            f"[LIVE] Form modal not found after {modal_timeout}ms. Ending form loop.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
                         )
                         break
 
@@ -568,8 +651,14 @@ async def execution_node(state: JobApplyState) -> dict:
                     # Check for external redirect or assessment
                     modal_text = await modal.inner_text()
                     if "external" in modal_text.lower() or "assessment" in modal_text.lower():
-                        print(
-                            "⚠️ [LIVE] Form requires external redirect or assessment. Needs manual review."
+                        log_event(
+                            "warning",
+                            "execution.external_assessment",
+                            "⚠️ [LIVE] Form requires external redirect or assessment. Needs manual review.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            outcome="needs_manual_review",
                         )
                         await _safe_close_page(page)
                         return _manual_review_update(
@@ -593,9 +682,15 @@ async def execution_node(state: JobApplyState) -> dict:
                         if not current_value:
                             early_text_fields.append(field)
                     if early_text_fields:
-                        print(
+                        log_event(
+                            "debug",
+                            "execution.early_text_fields",
                             f"[LIVE] Found {len(early_text_fields)} unanswered "
-                            "text/number field(s) before choice questions."
+                            "text/number field(s) before choice questions.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={"field_count": len(early_text_fields)},
                         )
                     for input_elem in early_text_fields:
                         label = await get_form_field_label(input_elem, page)
@@ -606,7 +701,19 @@ async def execution_node(state: JobApplyState) -> dict:
                             get_auto_fill_value(label, profile) if is_known_field(label) else None
                         )
                         if not auto_value:
-                            print(f"[LIVE] Sending Telegram input question: '{label}'")
+                            log_event(
+                                "info",
+                                "execution.question_prompted",
+                                "[LIVE] Sending form field question to operator.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={
+                                    "kind": "input",
+                                    "ordinal": len(form_qa_exchanges),
+                                    "question_fingerprint": fingerprint(label),
+                                },
+                            )
                             answer, timed_out = await ask_user_for_question(
                                 label,
                                 current_job,
@@ -635,14 +742,30 @@ async def execution_node(state: JobApplyState) -> dict:
                             auto_value = answer
 
                         if auto_value is not None:
-                            print(f"[LIVE] Filling field: '{label}'")
+                            log_event(
+                                "debug",
+                                "execution.field_fill",
+                                "[LIVE] Filling form field.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={"question_fingerprint": fingerprint(label)},
+                            )
                             await input_elem.fill(str(auto_value))
                             await asyncio.sleep(0.3)
 
                     # 1. Handle Fieldsets (Radio Button Groups)
                     fieldsets = await modal.query_selector_all("fieldset")
                     if fieldsets:
-                        print(f"[LIVE] Found {len(fieldsets)} question group(s).")
+                        log_event(
+                            "debug",
+                            "execution.fieldset_groups",
+                            f"[LIVE] Found {len(fieldsets)} question group(s).",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={"group_count": len(fieldsets)},
+                        )
                     fieldset_questions = []
                     for fieldset in fieldsets:
                         legend_text = await _fieldset_question_text(fieldset, page)
@@ -679,7 +802,20 @@ async def execution_node(state: JobApplyState) -> dict:
                         if not selected_label:
                             # Ask user via Telegram
                             prompt_question = legend_text
-                            print(f"[LIVE] Sending Telegram question to user: '{prompt_question}'")
+                            log_event(
+                                "info",
+                                "execution.question_prompted",
+                                "[LIVE] Sending form choice question to operator.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={
+                                    "kind": "fieldset",
+                                    "ordinal": len(form_qa_exchanges),
+                                    "question_fingerprint": fingerprint(prompt_question),
+                                    "option_count": len(option_labels),
+                                },
+                            )
                             answer, timed_out = await ask_user_for_question(
                                 prompt_question,
                                 current_job,
@@ -699,7 +835,14 @@ async def execution_node(state: JobApplyState) -> dict:
                             )
 
                             if timed_out:
-                                print("❌ [LIVE] Q&A timed out. Skipping job.")
+                                log_event(
+                                    "warning",
+                                    "execution.qa_timeout",
+                                    "❌ [LIVE] Q&A timed out. Skipping job.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                )
                                 await _safe_close_page(page)
                                 return _skipped_update(
                                     state,
@@ -727,13 +870,32 @@ async def execution_node(state: JobApplyState) -> dict:
                                 {"choice_field": legend_text},
                             )
 
-                        print(f"[LIVE] Selecting radio: '{legend_text}' -> '{selected_label}'")
+                        log_event(
+                            "debug",
+                            "execution.radio_selecting",
+                            "[LIVE] Selecting fieldset radio option.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={
+                                "question_fingerprint": fingerprint(legend_text),
+                                "option_fingerprint": fingerprint(selected_label),
+                            },
+                        )
                         selection_method = await select_live_radio_option(
                             page,
                             legend_text,
                             selected_label,
                         )
-                        print(f"[LIVE] Radio selected through {selection_method}.")
+                        log_event(
+                            "debug",
+                            "execution.radio_selected",
+                            f"[LIVE] Radio selected through {selection_method}.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={"method": bound_text(selection_method, 60)},
+                        )
                         await asyncio.sleep(0.3)
 
                     # LinkedIn may render choices with ARIA roles instead of native radios.
@@ -765,7 +927,20 @@ async def execution_node(state: JobApplyState) -> dict:
                         role_group_questions.append((question, labels))
 
                     for question, labels in role_group_questions:
-                        print(f"[LIVE] Sending Telegram choice question: '{question}'")
+                        log_event(
+                            "info",
+                            "execution.question_prompted",
+                            "[LIVE] Sending form choice question to operator.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={
+                                "kind": "choice",
+                                "ordinal": len(form_qa_exchanges),
+                                "question_fingerprint": fingerprint(question),
+                                "option_count": len(labels),
+                            },
+                        )
                         answer, timed_out = await ask_user_for_question(
                             question,
                             current_job,
@@ -802,13 +977,32 @@ async def execution_node(state: JobApplyState) -> dict:
                                 form_qa_exchanges,
                                 {"choice_field": question},
                             )
-                        print(f"[LIVE] Selecting choice: '{question}' -> '{labels[matched]}'")
+                        log_event(
+                            "debug",
+                            "execution.choice_selecting",
+                            "[LIVE] Selecting choice option.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={
+                                "question_fingerprint": fingerprint(question),
+                                "option_fingerprint": fingerprint(labels[matched]),
+                            },
+                        )
                         selection_method = await select_live_role_radio_option(
                             page,
                             question,
                             labels[matched],
                         )
-                        print(f"[LIVE] Choice selected through {selection_method}.")
+                        log_event(
+                            "debug",
+                            "execution.choice_selected",
+                            f"[LIVE] Choice selected through {selection_method}.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={"method": bound_text(selection_method, 60)},
+                        )
                         await asyncio.sleep(0.3)
 
                     modal = await page.query_selector(MODAL_CSS) or page
@@ -855,7 +1049,20 @@ async def execution_node(state: JobApplyState) -> dict:
                                 {"choice_field": question},
                             )
 
-                        print(f"[LIVE] Sending Telegram dropdown question: '{question}'")
+                        log_event(
+                            "info",
+                            "execution.question_prompted",
+                            "[LIVE] Sending form dropdown question to operator.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={
+                                "kind": "dropdown",
+                                "ordinal": len(form_qa_exchanges),
+                                "question_fingerprint": fingerprint(question),
+                                "option_count": len(labels),
+                            },
+                        )
                         answer, timed_out = await ask_user_for_question(
                             question,
                             current_job,
@@ -888,11 +1095,22 @@ async def execution_node(state: JobApplyState) -> dict:
                             return _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
-                                f"Could not match an answer for choice question: {question}",
+                                f"Could not match an answer for dropdown: {label}",
                                 form_qa_exchanges,
-                                {"choice_field": question},
+                                {"choice_field": label},
                             )
-                        print(f"[LIVE] Selecting dropdown: '{question}' -> '{labels[matched]}'")
+                        log_event(
+                            "debug",
+                            "execution.dropdown_selecting",
+                            "[LIVE] Selecting custom dropdown option.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={
+                                "question_fingerprint": fingerprint(question),
+                                "option_fingerprint": fingerprint(labels[matched]),
+                            },
+                        )
                         await option_pairs[matched][0].click()
                         await asyncio.sleep(0.3)
 
@@ -905,8 +1123,14 @@ async def execution_node(state: JobApplyState) -> dict:
                         val = await inp.input_value()
                         if not val:
                             empty_count += 1
-                    print(
-                        f"[LIVE] Found {len(inputs)} standard fields on this page ({empty_count} empty)."
+                    log_event(
+                        "debug",
+                        "execution.standard_fields",
+                        f"[LIVE] Found {len(inputs)} standard fields on this page ({empty_count} empty).",
+                        run_id=run_id,
+                        job_id=job_id or None,
+                        node="execution_node",
+                        details={"field_count": len(inputs), "empty_count": empty_count},
                     )
                     for input_elem in inputs:
                         value = await input_elem.input_value()
@@ -925,7 +1149,18 @@ async def execution_node(state: JobApplyState) -> dict:
                         if is_auto_skip_field(label):
                             continue
 
-                        print(f"[LIVE] Field: '{label}' (type: {tag_name})")
+                        log_event(
+                            "debug",
+                            "execution.field_inspected",
+                            "[LIVE] Inspecting standard form field.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={
+                                "field_type": bound_text(tag_name, 20),
+                                "question_fingerprint": fingerprint(label),
+                            },
+                        )
 
                         auto_value = None
                         if is_known_field(label):
@@ -959,8 +1194,19 @@ async def execution_node(state: JobApplyState) -> dict:
                             if not val_to_select:
                                 option_labels = [txt for _, txt in selectable_options]
                                 prompt_question = label
-                                print(
-                                    f"[LIVE] Sending Telegram dropdown question: '{prompt_question}'"
+                                log_event(
+                                    "info",
+                                    "execution.question_prompted",
+                                    "[LIVE] Sending form dropdown question to operator.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                    details={
+                                        "kind": "select_dropdown",
+                                        "ordinal": len(form_qa_exchanges),
+                                        "question_fingerprint": fingerprint(prompt_question),
+                                        "option_count": len(option_labels),
+                                    },
                                 )
                                 answer, timed_out = await ask_user_for_question(
                                     prompt_question,
@@ -980,7 +1226,14 @@ async def execution_node(state: JobApplyState) -> dict:
                                     }
                                 )
                                 if timed_out:
-                                    print("❌ [LIVE] Q&A timed out. Skipping job.")
+                                    log_event(
+                                        "warning",
+                                        "execution.qa_timeout",
+                                        "❌ [LIVE] Q&A timed out. Skipping job.",
+                                        run_id=run_id,
+                                        job_id=job_id or None,
+                                        node="execution_node",
+                                    )
                                     await _safe_close_page(page)
                                     return _skipped_update(
                                         state,
@@ -1008,7 +1261,18 @@ async def execution_node(state: JobApplyState) -> dict:
                                     {"choice_field": label},
                                 )
 
-                            print(f"[LIVE] Selecting dropdown: '{label}' -> '{val_to_select}'")
+                            log_event(
+                                "debug",
+                                "execution.dropdown_selecting",
+                                "[LIVE] Selecting dropdown option.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={
+                                    "question_fingerprint": fingerprint(label),
+                                    "option_fingerprint": fingerprint(val_to_select),
+                                },
+                            )
                             await input_elem.select_option(value=val_to_select)
                             await asyncio.sleep(0.3)
                         else:
@@ -1019,7 +1283,19 @@ async def execution_node(state: JobApplyState) -> dict:
                                 label,
                             )
                             if not auto_value:
-                                print(f"[LIVE] Sending Telegram input question: '{label}'")
+                                log_event(
+                                    "info",
+                                    "execution.question_prompted",
+                                    "[LIVE] Sending form field question to operator.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                    details={
+                                        "kind": "input",
+                                        "ordinal": len(form_qa_exchanges),
+                                        "question_fingerprint": fingerprint(label),
+                                    },
+                                )
                                 answer, timed_out = await ask_user_for_question(
                                     label,
                                     current_job,
@@ -1037,7 +1313,14 @@ async def execution_node(state: JobApplyState) -> dict:
                                     }
                                 )
                                 if timed_out:
-                                    print("❌ [LIVE] Q&A timed out. Skipping job.")
+                                    log_event(
+                                        "warning",
+                                        "execution.qa_timeout",
+                                        "❌ [LIVE] Q&A timed out. Skipping job.",
+                                        run_id=run_id,
+                                        job_id=job_id or None,
+                                        node="execution_node",
+                                    )
                                     await _safe_close_page(page)
                                     return _skipped_update(
                                         state,
@@ -1054,7 +1337,18 @@ async def execution_node(state: JobApplyState) -> dict:
                                     if is_known_field(label) and get_auto_fill_value(label, profile)
                                     else "User answer"
                                 )
-                                print(f"[LIVE]   -> {source} '{label}' with: '{auto_value}'")
+                                log_event(
+                                    "debug",
+                                    "execution.field_filled",
+                                    f"[LIVE]   -> {source} form field.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                    details={
+                                        "source": bound_text(source, 20),
+                                        "question_fingerprint": fingerprint(label),
+                                    },
+                                )
                                 await input_elem.fill(auto_value)
                                 await asyncio.sleep(0.3)
 
@@ -1129,8 +1423,14 @@ async def execution_node(state: JobApplyState) -> dict:
                                     f"Application agreement was not accepted: {cb_label}",
                                     form_qa_exchanges,
                                 )
-                            print(
-                                f"[LIVE] Checking approved agreement checkbox: '{cb_label[:40]}...'"
+                            log_event(
+                                "debug",
+                                "execution.consent_checked",
+                                "[LIVE] Checking approved agreement checkbox.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={"question_fingerprint": fingerprint(cb_label)},
                             )
                             await cb.check()
                             await asyncio.sleep(0.3)
@@ -1191,8 +1491,13 @@ async def execution_node(state: JobApplyState) -> dict:
                     resume_path = state.get("resume_path")
                     for file_input in file_inputs:
                         if resume_path and os.path.exists(resume_path):
-                            print(
-                                f"[LIVE] Uploading resume file: '{os.path.basename(resume_path)}'"
+                            log_event(
+                                "debug",
+                                "execution.resume_upload",
+                                "[LIVE] Uploading resume file.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
                             )
                             await file_input.set_input_files(resume_path)
                             await asyncio.sleep(1)
@@ -1205,7 +1510,15 @@ async def execution_node(state: JobApplyState) -> dict:
                         val_res = await validate_visible_required_controls(modal, page)
                         if not val_res.is_valid:
                             reason_msg = val_res.reason or "Unresolved visible required field(s)"
-                            print(f"⚠️ [LIVE] {reason_msg}")
+                            log_event(
+                                "warning",
+                                "execution.required_fields_unresolved",
+                                f"⚠️ [LIVE] {reason_msg}",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={"unresolved_count": len(val_res.unresolved_fields)},
+                            )
                             await _safe_close_page(page)
                             return _manual_review_update(
                                 state,
@@ -1221,8 +1534,14 @@ async def execution_node(state: JobApplyState) -> dict:
 
                             # Dry run mode
                             if state["dry_run"]:
-                                print(
-                                    "[LIVE] Dry run mode - reached review/submit step. Closing modal without submitting."
+                                log_event(
+                                    "info",
+                                    "execution.dry_run_reached_submit",
+                                    "[LIVE] Dry run mode - reached review/submit step. Closing modal without submitting.",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    node="execution_node",
+                                    outcome="dry_run",
                                 )
                                 await _safe_close_page(page)
                                 update = _applied_update(state, "dry_run", form_qa_exchanges)
@@ -1444,14 +1763,28 @@ async def execution_node(state: JobApplyState) -> dict:
                                 )
 
                             submission_attempted = True
-                            print("🚀 [LIVE] CLICKING SUBMIT - SUBMITTING APPLICATION!")
+                            log_event(
+                                "info",
+                                "execution.submit_clicked",
+                                "🚀 [LIVE] CLICKING SUBMIT - SUBMITTING APPLICATION!",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                attempt_id=attempt_id,
+                                node="execution_node",
+                            )
                             await next_btn.click()
 
                             # 5. Monitor delayed post-submit safety barriers and confirmation
                             confirmed, post_barrier = await wait_for_submission_or_safety(page)
                             if post_barrier and post_barrier.detected:
-                                print(
-                                    f"🛑 [LIVE] Account safety barrier detected after submit: {post_barrier.reason}"
+                                log_event(
+                                    "warning",
+                                    "execution.post_submit_barrier",
+                                    f"🛑 [LIVE] Account safety barrier detected after submit: {post_barrier.reason}",
+                                    run_id=run_id,
+                                    job_id=job_id or None,
+                                    attempt_id=attempt_id,
+                                    node="execution_node",
                                 )
                                 await _safe_close_page(page)
                                 return _account_safety_execution_update(
@@ -1567,7 +1900,15 @@ async def execution_node(state: JobApplyState) -> dict:
                             # Guard immediately BEFORE clicking Next/Review
                             await guard_page_account_safety(page, stage="execution_pre_step_click")
 
-                            print(f"[LIVE] Clicking: '{btn_text}'")
+                            log_event(
+                                "debug",
+                                "execution.nav_click",
+                                f"[LIVE] Clicking: '{btn_text}'",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                details={"button": bound_text(btn_text, 40)},
+                            )
                             await next_btn.click()
                             await asyncio.sleep(get_randomized_delay())
 
@@ -1576,9 +1917,14 @@ async def execution_node(state: JobApplyState) -> dict:
                     else:
                         labels = await visible_button_labels(modal)
                         label_text = ", ".join(labels) if labels else "none"
-                        print(
-                            "[LIVE] No recognized forward/submit control found. "
-                            f"Visible buttons: {label_text}"
+                        log_event(
+                            "warning",
+                            "execution.no_navigation_control",
+                            "[LIVE] No recognized forward/submit control found.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                            details={"visible_buttons": bound_text(label_text, 120)},
                         )
                         await _safe_close_page(page)
                         return _manual_review_update(
@@ -1590,7 +1936,14 @@ async def execution_node(state: JobApplyState) -> dict:
                         )
 
                 # Clean close outside form steps loop
-                print("[LIVE] Closing job details page.")
+                log_event(
+                    "debug",
+                    "execution.page_close",
+                    "[LIVE] Closing job details page.",
+                    run_id=run_id,
+                    job_id=job_id or None,
+                    node="execution_node",
+                )
                 close_err = await _safe_close_page(page)
                 if close_err:
                     secondary_errors.append(close_err)
@@ -1608,8 +1961,15 @@ async def execution_node(state: JobApplyState) -> dict:
                     )
 
         if application_submitted:
-            print(
-                f"✅ [LIVE] Successfully submitted application for {current_job['title']} at {current_job['company']}!"
+            log_event(
+                "info",
+                "execution.completed_submitted",
+                f"✅ [LIVE] Successfully submitted application for {current_job['title']} at {current_job['company']}!",
+                run_id=run_id,
+                job_id=job_id or None,
+                attempt_id=attempt_id,
+                node="execution_node",
+                outcome="submitted",
             )
             update = _applied_update(
                 state,
@@ -1631,7 +1991,15 @@ async def execution_node(state: JobApplyState) -> dict:
                 ]
             return update
         else:
-            print("❌ [LIVE] Application incomplete or failed.")
+            log_event(
+                "error",
+                "execution.incomplete",
+                "❌ [LIVE] Application incomplete or failed.",
+                run_id=run_id,
+                job_id=job_id or None,
+                node="execution_node",
+                outcome="failed",
+            )
             return _failed_update(state, "Could not complete application flow", form_qa_exchanges)
 
     except AccountSafetyBarrierError as safety_err:
@@ -1672,7 +2040,15 @@ async def execution_node(state: JobApplyState) -> dict:
             pre_submit=not submission_attempted,
         )
     except UserSkippedJob as exc:
-        print(f"[LIVE] User skipped this job from Telegram while answering: '{exc.question}'")
+        log_event(
+            "info",
+            "execution.user_skipped",
+            "[LIVE] User skipped this job from Telegram while answering.",
+            run_id=run_id,
+            job_id=job_id or None,
+            node="execution_node",
+            details={"question_fingerprint": fingerprint(exc.question)},
+        )
         form_qa_exchanges.append(
             {
                 "question": exc.question,
@@ -1687,7 +2063,15 @@ async def execution_node(state: JobApplyState) -> dict:
                 f"Job skipped: {current_job['title']} at {current_job['company']}."
             )
         except Exception as telegram_exc:
-            print(f"[LIVE] Skip acknowledgement could not be sent: {telegram_exc}")
+            log_event(
+                "warning",
+                "execution.skip_ack_failed",
+                "[LIVE] Skip acknowledgement could not be sent.",
+                run_id=run_id,
+                job_id=job_id or None,
+                node="execution_node",
+                exc=telegram_exc,
+            )
         return _skipped_update(
             state,
             "user_skipped",
@@ -1789,7 +2173,16 @@ async def execution_node(state: JobApplyState) -> dict:
             )
 
         error_msg = f"Execution error for {current_job['title']}: {str(e)}"
-        print(f"❌ [LIVE] Execution Error: {str(e)}")
+        log_event(
+            "error",
+            "execution.error",
+            f"❌ [LIVE] Execution Error: {type(e).__name__}",
+            run_id=run_id,
+            job_id=job_id or None,
+            node="execution_node",
+            outcome="failed",
+            exc=e,
+        )
         try:
             if page is not None and hasattr(page, "is_closed") and not page.is_closed():
                 safety_check = await inspect_page_account_safety(page, stage="execution_error")
@@ -1802,6 +2195,14 @@ async def execution_node(state: JobApplyState) -> dict:
                     page, state.get("run_id", ""), f"exec_error_{current_job.get('job_id', '')}"
                 )
         except Exception as screenshot_err:
-            print(f"Failed to take error screenshot: {screenshot_err}")
+            log_event(
+                "warning",
+                "execution.error_screenshot_failed",
+                "Failed to take error screenshot.",
+                run_id=run_id,
+                job_id=job_id or None,
+                node="execution_node",
+                exc=screenshot_err,
+            )
         await _safe_close_page(page)
         return _failed_update(state, error_msg, form_qa_exchanges)

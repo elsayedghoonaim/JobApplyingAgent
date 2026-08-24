@@ -12,6 +12,7 @@ from jobapply.utils.job_filters import (
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
+from jobapply.utils.observability import log_event
 from jobapply.utils.prompts import get_qualification_prompt, truncate_head_tail
 from jobapply.utils.source_cache import get_cached_profile
 from jobapply.utils.tracing import get_qualification_metadata, get_safe_job_metadata
@@ -42,7 +43,15 @@ async def qualification_node(state: JobApplyState) -> dict:
 
     if is_senior_position_title(current_job.get("title")):
         exclusion_reason = "Senior-level position excluded by user preference"
-        print(f"⛔ EXCLUDED - {exclusion_reason} | {current_job.get('title')}")
+        log_event(
+            "info",
+            "qualification.senior_excluded",
+            f"⛔ EXCLUDED - {exclusion_reason} | {current_job.get('title')}",
+            run_id=str(state.get("run_id") or "") or None,
+            job_id=current_job.get("job_id"),
+            node="qualification_node",
+            outcome="not_qualified",
+        )
         seen_job_ids = set(state.get("seen_job_ids") or set())
         errors = list(state.get("errors") or [])
         if current_job.get("job_id"):
@@ -65,7 +74,15 @@ async def qualification_node(state: JobApplyState) -> dict:
                 err_msg = (
                     f"Failed to persist exclusion for {current_job['job_id']}: ({type(e).__name__})"
                 )
-                print(f"[DEBUG] {err_msg}")
+                log_event(
+                    "debug",
+                    "qualification.exclusion_persist_failed",
+                    err_msg,
+                    run_id=str(state.get("run_id") or "") or None,
+                    job_id=current_job["job_id"],
+                    node="qualification_node",
+                    exc=e,
+                )
                 errors.append(err_msg)
 
         return {
@@ -147,8 +164,14 @@ async def qualification_node(state: JobApplyState) -> dict:
                 )
                 effective_gaps = list(result.gaps) + [exclusion_reason]
                 status = "not_qualified"
-                print(
-                    f"⛔ Disallowed language(s) required ({lang_str}) | {current_job.get('title')}"
+                log_event(
+                    "info",
+                    "qualification.language_excluded",
+                    f"⛔ Disallowed language(s) required ({lang_str}) | {current_job.get('title')}",
+                    run_id=str(state.get("run_id") or "") or None,
+                    job_id=current_job.get("job_id"),
+                    node="qualification_node",
+                    outcome="not_qualified",
                 )
             else:
                 qualified = result.score >= settings.qualification_threshold
@@ -159,12 +182,29 @@ async def qualification_node(state: JobApplyState) -> dict:
                 exclusion_reason = None
 
                 if qualified:
-                    print(
-                        f"✅ QUALIFIED - Score: {effective_score:.2f} | {current_job.get('title')} at {current_job.get('company')}"
+                    log_event(
+                        "info",
+                        "qualification.completed",
+                        f"✅ QUALIFIED - Score: {effective_score:.2f} | {current_job.get('title')} at {current_job.get('company')}",
+                        run_id=str(state.get("run_id") or "") or None,
+                        job_id=current_job.get("job_id"),
+                        node="qualification_node",
+                        outcome="qualified",
+                        details={"score": float(effective_score)},
                     )
                 else:
-                    print(
-                        f"❌ Not qualified - Score: {effective_score:.2f} (threshold: {settings.qualification_threshold}) | {current_job.get('title')}"
+                    log_event(
+                        "info",
+                        "qualification.completed",
+                        f"❌ Not qualified - Score: {effective_score:.2f} (threshold: {settings.qualification_threshold}) | {current_job.get('title')}",
+                        run_id=str(state.get("run_id") or "") or None,
+                        job_id=current_job.get("job_id"),
+                        node="qualification_node",
+                        outcome="not_qualified",
+                        details={
+                            "score": float(effective_score),
+                            "threshold": float(settings.qualification_threshold),
+                        },
                     )
 
             # Update trace with qualification result
@@ -247,7 +287,15 @@ async def qualification_node(state: JobApplyState) -> dict:
                 await dedup.mark_seen(current_job["job_id"], job_data)
         except Exception as store_err:
             err_msg = f"Failed to persist qualification for {current_job.get('job_id')}: ({type(store_err).__name__})"
-            print(f"[DEBUG] {err_msg}")
+            log_event(
+                "debug",
+                "qualification.persist_failed",
+                err_msg,
+                run_id=str(state.get("run_id") or "") or None,
+                job_id=current_job.get("job_id"),
+                node="qualification_node",
+                exc=store_err,
+            )
             errors.append(err_msg)
 
         # Add to in-memory seen set (copying state immutably)
@@ -286,7 +334,16 @@ async def qualification_node(state: JobApplyState) -> dict:
     except Exception as e:
         error_msg = f"Qualification error for {current_job.get('title', 'unknown')}: {str(e)}"
         jobs_evaluated = state.get("jobs_evaluated_count", 0) + 1
-        print(f"❌ ERROR during qualification: {current_job.get('title', 'unknown')} - {str(e)}")
+        log_event(
+            "error",
+            "qualification.failed",
+            f"❌ ERROR during qualification: {current_job.get('title', 'unknown')}",
+            run_id=str(state.get("run_id") or "") or None,
+            job_id=current_job.get("job_id"),
+            node="qualification_node",
+            outcome="failed",
+            exc=e,
+        )
         return {
             "qualification_result": {
                 "qualified": False,
