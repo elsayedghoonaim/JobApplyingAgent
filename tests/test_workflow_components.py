@@ -18,6 +18,7 @@ from jobapply.models.telegram import (
 )
 from jobapply.nodes.execution import (
     EASY_APPLY_SELECTOR,
+    FIRST_FORM_MODAL_TIMEOUT_MS,
     STANDARD_TEXT_FIELD_SELECTOR,
     UserSkippedJob,
     ask_user_for_question,
@@ -688,6 +689,7 @@ def test_linkedin_signin_url_detection():
 def test_easy_apply_selector_supports_current_linkedin_apply_links():
     assert "a[aria-label*='LinkedIn Apply' i]" in EASY_APPLY_SELECTOR
     assert "a[href*='openSDUIApplyFlow=true']" in EASY_APPLY_SELECTOR
+    assert FIRST_FORM_MODAL_TIMEOUT_MS >= 15_000
 
 
 @pytest.mark.asyncio

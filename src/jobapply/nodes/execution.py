@@ -108,6 +108,7 @@ EASY_APPLY_SELECTOR = (
     "a[aria-label*='LinkedIn Apply' i], "
     "a[href*='openSDUIApplyFlow=true']"
 )
+FIRST_FORM_MODAL_TIMEOUT_MS = 15_000
 
 
 # Compatibility wrappers routing through module-level symbols for test mocking
@@ -555,7 +556,7 @@ async def execution_node(state: JobApplyState) -> dict:
                     await guard_page_account_safety(page, stage="execution_form_step_top")
 
                     # Wait for modal (longer timeout on first page)
-                    modal_timeout = 8000 if step == 0 else 5000
+                    modal_timeout = FIRST_FORM_MODAL_TIMEOUT_MS if step == 0 else 5000
                     modal_found = False
                     try:
                         await page.wait_for_selector(MODAL_CSS, timeout=modal_timeout)
