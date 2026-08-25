@@ -325,7 +325,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         extra={"job_id": job_id, "attempt_status": "submitted"},
                     )
                 if preflight.status == AttemptStatus.SUBMISSION_UNKNOWN:
-                    return _manual_review_update(
+                    return await _manual_review_update(
                         state,
                         "submission_unknown_prior_attempt",
                         f"Job {job_id} has a prior submission_unknown attempt; manual review required before retrying",
@@ -661,7 +661,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             outcome="needs_manual_review",
                         )
                         await _safe_close_page(page)
-                        return _manual_review_update(
+                        return await _manual_review_update(
                             state,
                             "external_or_assessment",
                             "External redirect or assessment required",
@@ -862,7 +862,7 @@ async def execution_node(state: JobApplyState) -> dict:
 
                         if not selected_label:
                             await _safe_close_page(page)
-                            return _manual_review_update(
+                            return await _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
                                 f"Could not match an answer for choice question: {legend_text}",
@@ -970,7 +970,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         matched = match_choice_index(answer, labels) if answer is not None else None
                         if matched is None:
                             await _safe_close_page(page)
-                            return _manual_review_update(
+                            return await _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
                                 f"Could not match an answer for choice question: {question}",
@@ -1041,7 +1041,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         labels = [l_opt for _, l_opt in option_pairs]
                         if not labels:
                             await _safe_close_page(page)
-                            return _manual_review_update(
+                            return await _manual_review_update(
                                 state,
                                 "choice_options_not_found",
                                 f"Could not read options for choice question: {question}",
@@ -1092,7 +1092,7 @@ async def execution_node(state: JobApplyState) -> dict:
                         matched = match_choice_index(answer, labels) if answer is not None else None
                         if matched is None:
                             await _safe_close_page(page)
-                            return _manual_review_update(
+                            return await _manual_review_update(
                                 state,
                                 "choice_answer_unmatched",
                                 f"Could not match an answer for dropdown: {label}",
@@ -1253,7 +1253,7 @@ async def execution_node(state: JobApplyState) -> dict:
 
                             if not val_to_select:
                                 await _safe_close_page(page)
-                                return _manual_review_update(
+                                return await _manual_review_update(
                                     state,
                                     "choice_answer_unmatched",
                                     f"Could not match an answer for dropdown: {label}",
@@ -1478,7 +1478,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     await asyncio.sleep(0.3)
                                 elif required_choice:
                                     await _safe_close_page(page)
-                                    return _manual_review_update(
+                                    return await _manual_review_update(
                                         state,
                                         "required_choice_declined",
                                         f"Required checkbox was not selected: {cb_label}",
@@ -1520,7 +1520,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 details={"unresolved_count": len(val_res.unresolved_fields)},
                             )
                             await _safe_close_page(page)
-                            return _manual_review_update(
+                            return await _manual_review_update(
                                 state,
                                 "unresolved_required_fields",
                                 reason_msg,
@@ -1572,7 +1572,7 @@ async def execution_node(state: JobApplyState) -> dict:
 
                             if not await next_btn.is_enabled():
                                 await _safe_close_page(page)
-                                return _manual_review_update(
+                                return await _manual_review_update(
                                     state,
                                     "submit_button_disabled",
                                     "Submit button is disabled; required fields may be incomplete",
@@ -1600,7 +1600,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                         extra={"job_id": job_id, "attempt_status": "submitted"},
                                     )
                                 if claim.status == AttemptStatus.SUBMISSION_UNKNOWN:
-                                    return _manual_review_update(
+                                    return await _manual_review_update(
                                         state,
                                         "submission_unknown_prior_attempt",
                                         f"Job {job_id} has a prior submission_unknown attempt; manual review required before retrying",
@@ -1653,7 +1653,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 msg = f"Quota reservation failed ({type(q_err).__name__})"
                                 if not cleaned:
                                     msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
-                                return _manual_review_update(
+                                return await _manual_review_update(
                                     state,
                                     "quota_reservation_failed",
                                     msg,
@@ -1674,7 +1674,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 if close_err:
                                     c_errs.append(close_err)
                                 if not cleaned:
-                                    return _manual_review_update(
+                                    return await _manual_review_update(
                                         state,
                                         "cleanup_required",
                                         f"Application cap reached but cleanup required: {'; '.join(c_errs)}",
@@ -1713,7 +1713,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 msg = "Failed to transition attempt to quota_reserved before submit"
                                 if not cleaned:
                                     msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
-                                return _manual_review_update(
+                                return await _manual_review_update(
                                     state,
                                     "reserve_quota_state_failed",
                                     msg,
@@ -1750,7 +1750,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                 msg = f"Failed to persist submission_unknown record before click ({type(exc).__name__})"
                                 if not cleaned:
                                     msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
-                                return _manual_review_update(
+                                return await _manual_review_update(
                                     state,
                                     "persist_unknown_failed",
                                     msg,
@@ -1787,7 +1787,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     node="execution_node",
                                 )
                                 await _safe_close_page(page)
-                                return _account_safety_execution_update(
+                                return await _account_safety_execution_update(
                                     state,
                                     post_barrier,
                                     current_job,
@@ -1806,7 +1806,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     detected_at=datetime.now(timezone.utc).isoformat(),
                                     resume_instructions=SAFE_RESUME_INSTRUCTIONS,
                                 )
-                                return _account_safety_execution_update(
+                                return await _account_safety_execution_update(
                                     state,
                                     unconfirmed_detection,
                                     current_job,
@@ -1833,7 +1833,7 @@ async def execution_node(state: JobApplyState) -> dict:
                                     )
                             except Exception as db_err:
                                 await _safe_close_page(page)
-                                return _manual_review_update(
+                                return await _manual_review_update(
                                     state,
                                     "submission_confirmed_persistence_failed",
                                     f"Application confirmed on LinkedIn but primary database transition failed ({type(db_err).__name__})",
@@ -1927,7 +1927,7 @@ async def execution_node(state: JobApplyState) -> dict:
                             details={"visible_buttons": bound_text(label_text, 120)},
                         )
                         await _safe_close_page(page)
-                        return _manual_review_update(
+                        return await _manual_review_update(
                             state,
                             "no_next_or_submit_button",
                             "No recognized forward/submit control on Easy Apply form. "
@@ -2032,7 +2032,7 @@ async def execution_node(state: JobApplyState) -> dict:
             )
             return update
         await _safe_close_page(page)
-        return _account_safety_execution_update(
+        return await _account_safety_execution_update(
             state,
             safety_err.detection,
             current_job,
@@ -2081,7 +2081,7 @@ async def execution_node(state: JobApplyState) -> dict:
         )
     except FormQaInfrastructureError as qa_err:
         await _safe_close_page(page)
-        return _manual_review_update(
+        return await _manual_review_update(
             state,
             "form_qa_infrastructure_failed",
             f"Telegram Q&A storage/delivery error ({type(qa_err).__name__})",
@@ -2130,7 +2130,7 @@ async def execution_node(state: JobApplyState) -> dict:
             msg = f"Execution pre-click error ({type(e).__name__})"
             if not cleaned:
                 msg = f"{msg} (Cleanup required: {'; '.join(c_errs)})"
-            return _manual_review_update(
+            return await _manual_review_update(
                 state,
                 "unhandled_pre_click_exception",
                 msg,
@@ -2146,7 +2146,7 @@ async def execution_node(state: JobApplyState) -> dict:
                     )
                     await _safe_close_page(page)
                     if safety_check.detected:
-                        return _account_safety_execution_update(
+                        return await _account_safety_execution_update(
                             state,
                             safety_check,
                             current_job,
@@ -2164,7 +2164,7 @@ async def execution_node(state: JobApplyState) -> dict:
                 detected_at=datetime.now(timezone.utc).isoformat(),
                 resume_instructions=SAFE_RESUME_INSTRUCTIONS,
             )
-            return _account_safety_execution_update(
+            return await _account_safety_execution_update(
                 state,
                 ambiguous_detection,
                 current_job,
@@ -2188,7 +2188,7 @@ async def execution_node(state: JobApplyState) -> dict:
                 safety_check = await inspect_page_account_safety(page, stage="execution_error")
                 if safety_check.detected:
                     await _safe_close_page(page)
-                    return _account_safety_execution_update(
+                    return await _account_safety_execution_update(
                         state, safety_check, current_job, form_qa_exchanges, pre_submit=True
                     )
                 await take_error_screenshot(

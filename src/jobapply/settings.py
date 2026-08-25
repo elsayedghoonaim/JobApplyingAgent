@@ -2,10 +2,10 @@
 
 import os
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load .env file explicitly
@@ -91,8 +91,23 @@ class Settings(BaseSettings):
     max_profile_context_chars: int = Field(default=6000, ge=500, le=50000)
     max_resume_context_chars: int = Field(default=8000, ge=500, le=50000)
 
+    # Persistence
+    manual_review_collection: str = "manual_review_queue"
+
     # Search & Card Stability Loader
     search_queries: str = "Machine Learning Engineer,AI Engineer"
+    search_location: str = Field(default="Worldwide", min_length=1, max_length=200)
+    # Bounded positive number of days; unset/empty or 0 disables the recency filter.
+    search_recency_days: Optional[int] = Field(default=None, ge=0, le=30)
+
+    @field_validator("search_recency_days", mode="before")
+    @classmethod
+    def _empty_recency_disables_filter(cls, value: object) -> object:
+        """Treat an empty/unset environment value as 'recency disabled'."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     search_max_scroll_rounds: int = Field(default=5, ge=1, le=20)
     search_card_stability_rounds: int = Field(default=2, ge=1, le=10)
     search_scroll_delay_seconds: float = Field(default=0.3, ge=0.05, le=5.0)

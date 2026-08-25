@@ -22,7 +22,9 @@ from jobapply.utils.account_safety import (
 from jobapply.utils.paths import get_run_output_dir, sanitize_component
 from jobapply.utils.redaction import redact_string
 
-SUMMARY_SCHEMA_VERSION = 1
+# Task 9 released schema version 1. Intermediate 2/3 drafts were never
+# released, so the Task 10 format ships as version 2.
+SUMMARY_SCHEMA_VERSION = 2
 SUMMARY_FILENAME = "summary.json"
 
 TERMINAL_STATUS_COMPLETED = "completed"
@@ -91,6 +93,62 @@ def _submission_unknown_count(manual_review_outcomes: list[dict]) -> int:
         if bool(outcome.get("ambiguous_submission"))
         or outcome.get("attempt_status") == "submission_unknown"
     )
+
+
+def _is_repost_outcome(outcome: dict) -> bool:
+    """Authoritative repost flag from outcome fields (never log text)."""
+    return bool(outcome.get("is_repost"))
+
+
+def _dry_run_marker(outcome: dict) -> bool:
+    """Per-outcome durable dry-run marker; legacy outcomes default to False."""
+    return outcome.get("dry_run") is True
+
+
+MAX_INVARIANT_VIOLATIONS = 5
+
+
+def _dry_run_metrics(
+    *,
+    dry_run_session: bool,
+    outcomes: list[dict],
+) -> dict[str, Any]:
+    """Authoritative dry-run metrics derived only from per-outcome markers.
+
+    Every bucket counts exclusively outcomes whose own durable ``dry_run``
+    marker is true, so live-run outcomes can never cross-contaminate dry-run
+    reporting. ``reached_submit_boundary`` remains based on the ``dry_run``
+    status. ``confirmed_submissions_from_dry_run`` is structurally zero: a
+    submitted-status outcome carrying the dry-run marker is contradictory
+    data, exposed as a bounded invariant error instead of a reported
+    dry-run submission.
+    """
+    marked = [outcome for outcome in outcomes if _dry_run_marker(outcome)]
+    dry_runs = [item for item in marked if item.get("status") == STATUS_DRY_RUN]
+    contradictory_submissions = sum(1 for item in marked if item.get("status") == STATUS_SUBMITTED)
+
+    invariant_violations: list[str] = []
+    if contradictory_submissions:
+        # Contradictory durable data: never surface a dry-run submission;
+        # expose a bounded invariant error instead.
+        invariant_violations.append(
+            f"dry_run_marked_outcomes_with_submitted_status={contradictory_submissions}"
+        )
+
+    return {
+        "dry_run_session": bool(dry_run_session),
+        "reached_submit_boundary": len(dry_runs),
+        "needs_manual_review": sum(
+            1 for item in marked if item.get("status") == STATUS_MANUAL_REVIEW
+        ),
+        "skipped": sum(1 for item in marked if item.get("status") == STATUS_SKIPPED),
+        "failed": sum(1 for item in marked if item.get("status") == STATUS_FAILED),
+        # Guaranteed zero by construction; contradictions land in
+        # invariant_violations above instead of being reported as submissions.
+        "confirmed_submissions_from_dry_run": 0,
+        "reposted": sum(1 for item in dry_runs if _is_repost_outcome(item)),
+        "invariant_violations": invariant_violations[:MAX_INVARIANT_VIOLATIONS],
+    }
 
 
 def _account_safety_pause_summary(run_id: str, state: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -216,6 +274,12 @@ def build_summary(
 
     run_dir = get_run_output_dir(run_id, base_dir)
 
+    pending_queue_items = [
+        item
+        for item in (safe_state.get("manual_review_queue_pending") or [])
+        if isinstance(item, dict)
+    ]
+
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "run_id": canonical_run_id,
@@ -234,6 +298,15 @@ def build_summary(
         "needs_manual_review_count": len(manual_review),
         "submission_unknown_count": _submission_unknown_count(manual_review),
         "failed_count": len(failed_outcomes),
+        "repost_count": sum(1 for item in outcomes if _is_repost_outcome(item)),
+        "manual_review_queue_pending_count": len(pending_queue_items),
+        "manual_review_queue_overflow_count": int(
+            safe_state.get("manual_review_queue_overflow") or 0
+        ),
+        "dry_run_metrics": _dry_run_metrics(
+            dry_run_session=bool(dry_run),
+            outcomes=outcomes,
+        ),
         "error_count": len(all_errors),
         "errors": [_bounded_error(error) for error in all_errors[:MAX_SUMMARY_ERRORS]],
         "account_safety_pause": _account_safety_pause_summary(canonical_run_id, safe_state),

@@ -56,6 +56,7 @@ Reply followed by:
             prompt_text=raw_message,
             timeout=settings.approval_timeout_seconds,
             job_id=canonical_job_id,
+            inline_actions=["✅ Approve", "📄 Use Base", "❌ Skip"],
         )
     except Exception as exc:
         wait_res = CorrelationWaitResult(
@@ -74,8 +75,21 @@ Reply followed by:
         )
     active_nonce = wait_res.nonce or ""
 
+    # Callback presses map by persisted index to exact decisions; the rendered
+    # button label is never used for identity.
+    if wait_res.reply_kind == "callback" and wait_res.reply_option_index is not None:
+        callback_actions = ["✅ Approve", "📄 Use Base", "❌ Skip"]
+        index = wait_res.reply_option_index
+        if 0 <= index < len(callback_actions):
+            approval_status = {
+                0: "approved",
+                1: "use_base",
+                2: "skip",
+            }[index]
+        else:
+            approval_status = "use_base"
     # Parse reply
-    if reply is None:
+    elif reply is None:
         approval_status = "use_base"
     elif "approve" in reply.lower() or "✅" in reply:
         approval_status = "approved"
@@ -104,6 +118,7 @@ Reply followed by:
             "url": current_job.get("url"),
             "score": qual_result.get("score", 0.0),
             "status": "skipped",
+            "dry_run": bool(state.get("dry_run")),
             "reason": "user_skipped",
             "resume_path": state.get("resume_path"),
             "cover_letter_path": state.get("cover_letter_path"),

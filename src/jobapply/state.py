@@ -8,6 +8,8 @@ class JobApplyState(TypedDict):
 
     # ── Search iteration ──
     search_queries: list[str]
+    search_location: str  # effective LinkedIn location filter (CLI > env > Worldwide)
+    search_recency_days: Optional[int]  # bounded recency days; None = disabled
     current_query_index: int  # which query we're on
     current_page: int  # pagination within a query
     pages_per_query: int  # max pages to fetch per query
@@ -43,6 +45,11 @@ class JobApplyState(TypedDict):
     notification_sent: bool
     outbox_pending_count: Optional[int]
     outbox_unknown_count: Optional[int]
+    # Bounded serialized queue items whose durable enqueue failed and are
+    # retried idempotently at central safe boundaries. The overflow counter
+    # explicitly records entries evicted when the bounded list was full.
+    manual_review_queue_pending: list[dict]
+    manual_review_queue_overflow: int
 
     # ── Account safety ──
     account_safety_paused: bool

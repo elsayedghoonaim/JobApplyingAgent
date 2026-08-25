@@ -14,15 +14,21 @@ from jobapply.models.telegram import (
     OutboxStatus,
 )
 from jobapply.settings import get_settings
+from jobapply.utils.observability import log_event
 from jobapply.utils.redaction import redact_string
 from jobapply.utils.telegram_storage import (
+    CALLBACK_DATA_PREFIX,
+    MAX_INLINE_ACTIONS,
     NotificationOutboxRepository,
     TelegramApiDefiniteRejectError,
     TelegramRepository,
     TelegramTransportAmbiguousError,
+    build_inline_keyboard,
     make_bot_chat_key,
 )
 from jobapply.utils.tracing import get_telegram_metadata
+
+MAX_CALLBACK_ANSWER_LENGTH = 200
 
 
 def correlated_reply_text(
@@ -101,8 +107,14 @@ class TelegramClient:
             self.settings.telegram_bot_token, self.settings.telegram_chat_id
         )
 
-    async def send_message(self, text: str, parse_mode: str | None = None) -> int | None:
-        """Send checked messages and return the last Telegram message ID."""
+    async def send_message(
+        self, text: str, parse_mode: str | None = None, reply_markup: dict | None = None
+    ) -> int | None:
+        """Send checked messages and return the last Telegram message ID.
+
+        Inline keyboards ride on the first chunk so buttons stay attached to
+        the correlated prompt itself.
+        """
         async with trace(
             "telegram_send_message",
             run_type="tool",
@@ -110,8 +122,12 @@ class TelegramClient:
         ) as run_tree:
             chunks = [text[index : index + 4000] for index in range(0, len(text), 4000)] or [""]
             message_id = None
-            for chunk in chunks:
-                message_id = await self._send_single_message(chunk, parse_mode)
+            for chunk_index, chunk in enumerate(chunks):
+                message_id = await self._send_single_message(
+                    chunk,
+                    parse_mode,
+                    reply_markup if chunk_index == 0 else None,
+                )
                 if len(chunks) > 1:
                     await asyncio.sleep(0.5)
             if run_tree:
@@ -119,10 +135,14 @@ class TelegramClient:
                 run_tree.metadata["chunks_sent"] = len(chunks)
             return message_id
 
-    async def _send_single_message(self, text: str, parse_mode: str | None) -> int | None:
-        payload = {"chat_id": self.settings.telegram_chat_id, "text": text}
+    async def _send_single_message(
+        self, text: str, parse_mode: str | None, reply_markup: dict | None = None
+    ) -> int | None:
+        payload: dict[str, Any] = {"chat_id": self.settings.telegram_chat_id, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         token = self.settings.telegram_bot_token
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -248,6 +268,103 @@ class TelegramClient:
                 )
             return None
 
+    async def _answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        """Acknowledge one callback after durable acceptance; best-effort and bounded.
+
+        Failures degrade into a bounded structured warning: the reply is already
+        durable, so an ack failure can never undo acceptance.
+        """
+        token = self.settings.telegram_bot_token
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+                response = await client.post(
+                    f"{self._base_url}/answerCallbackQuery",
+                    json={
+                        "callback_query_id": callback_query_id,
+                        "text": redact_string(str(text or ""))[:MAX_CALLBACK_ANSWER_LENGTH],
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                if not data.get("ok"):
+                    desc = redact_string(
+                        str(data.get("description", "unknown error")),
+                        extra_secrets=[token],
+                    )
+                    log_event(
+                        "warning",
+                        "telegram.answer_callback_rejected",
+                        "answerCallbackQuery rejected; durable reply unaffected.",
+                        node="telegram_client",
+                        details={"reason": desc[:120]},
+                    )
+                    return False
+            return True
+        except Exception as exc:
+            sanitized = redact_string(str(exc), extra_secrets=[token])
+            log_event(
+                "warning",
+                "telegram.answer_callback_failed",
+                "answerCallbackQuery failed; durable reply unaffected.",
+                node="telegram_client",
+                details={"reason": sanitized[:120]},
+            )
+            return False
+
+    def callback_data_is_for_current_prompt(
+        self,
+        callback_update: dict,
+        configured_chat_id: str,
+        expected_nonce: str,
+        prompt_message_id: int | None,
+    ) -> tuple[bool, Optional[str], Optional[int]]:
+        """Validate a raw callback_query update against the active correlation.
+
+        Enforces the exact opaque codec prefix, a bounded nonnegative option
+        index, matching chat/nonce/prompt. Any mismatch never satisfies the
+        current waiter.
+        """
+        message = callback_update.get("message") or {}
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        if chat_id != str(configured_chat_id):
+            return False, None, None
+        data = callback_update.get("data")
+        parts = str(data or "").split("|")
+        if len(parts) != 3 or parts[0] != CALLBACK_DATA_PREFIX:
+            return False, None, None
+        nonce = parts[1]
+        if not nonce or nonce != expected_nonce:
+            return False, None, None
+        try:
+            index = int(parts[2])
+        except ValueError:
+            return False, None, None
+        if index < 0 or index > MAX_INLINE_ACTIONS:
+            return False, None, None
+        if prompt_message_id is None or message.get("message_id") != prompt_message_id:
+            return False, None, None
+        return True, str(callback_update.get("id") or ""), index
+
+    @staticmethod
+    def _bounded_buttoned_prompt(text: str, nonce: str, max_len: int = 3800) -> str:
+        """Fit one buttoned correlation into a single Telegram transport message.
+
+        The durable nonce reference is preserved so replies stay correlatable
+        even when long prompt bodies are truncated.
+        """
+        body = str(text or "")
+        if len(body) <= max_len:
+            return body
+        truncated = body[:max_len]
+        if nonce and nonce in truncated:
+            return truncated
+        reserve = len(nonce) + 16 if nonce else 0
+        cut = max(0, max_len - reserve)
+        trimmed = truncated[:cut].rstrip()
+        if nonce:
+            trimmed = f"{trimmed}\n\n[Ref: `{nonce}`]"
+        return trimmed
+
     async def send_and_wait_for_reply(
         self,
         correlation_key: str,
@@ -257,8 +374,17 @@ class TelegramClient:
         timeout: int = 300,
         job_id: str | None = None,
         metadata: dict | None = None,
+        inline_actions: list[str] | None = None,
     ) -> CorrelationWaitResult:
-        """Durable, restart-safe prompt sending and correlated reply waiting with lease renewal."""
+        """Durable, restart-safe prompt sending and correlated reply waiting with lease renewal.
+
+        When ``inline_actions`` is provided (bounded small option lists), the
+        prompt carries a Telegram inline keyboard whose opaque callback data is
+        correlated to this exact prompt/nonce. Ordinary text replies remain
+        fully accepted alongside buttons. If the buttoned prompt cannot be
+        delivered, existing fail-closed infrastructure behavior applies and no
+        second ambiguous prompt is ever sent automatically.
+        """
         # 1. Register correlation intent in MongoDB
         try:
             reg = await self.telegram_repo.register_intent(
@@ -268,6 +394,7 @@ class TelegramClient:
                 prompt_text=prompt_text,
                 job_id=job_id,
                 metadata=metadata,
+                inline_actions=inline_actions,
             )
         except Exception as reg_exc:
             return CorrelationWaitResult(
@@ -313,6 +440,18 @@ class TelegramClient:
                 correlation_key, lease_duration_seconds=30
             )
             if lease.acquired and lease.lease_id:
+                # Reply metadata (kind/index) lives on the durable document.
+                corr_doc = await self.telegram_repo.get_correlation(correlation_key)
+                if corr_doc is not None and corr_doc.reply_kind == "callback":
+                    # Crash recovery for a durably accepted button press: finish
+                    # cursor/acknowledge recovery under exact leases before
+                    # consuming, preserving reply → cursor → ack → consume.
+                    recovered = await self._recover_cached_callback_reply(
+                        correlation_key=correlation_key,
+                        reg=reg,
+                        waiter_lease_id=lease.lease_id,
+                    )
+                    return recovered
                 consume_res = await self.telegram_repo.consume_reply(
                     correlation_key, lease.lease_id
                 )
@@ -362,8 +501,22 @@ class TelegramClient:
                     nonce=reg.nonce,
                 )
 
+            # One message carries text and buttons together; button delivery
+            # failure is fail-closed, never a silent second plain-text prompt.
+            # Buttoned correlations are always a single transport message so the
+            # recorded prompt message ID is exactly the message whose buttons
+            # callbacks reference.
+            reply_markup = (
+                {"inline_keyboard": build_inline_keyboard(reg.nonce, reg.inline_actions)}
+                if reg.inline_actions
+                else None
+            )
             try:
-                sent_id = await self.send_message(reg.prompt_text)
+                if reg.inline_actions:
+                    buttoned_text = self._bounded_buttoned_prompt(reg.prompt_text, reg.nonce)
+                    sent_id = await self._send_single_message(buttoned_text, None, reply_markup)
+                else:
+                    sent_id = await self.send_message(reg.prompt_text, None, reply_markup)
                 if sent_id is None:
                     raise TelegramTransportAmbiguousError("sendMessage returned None message_id")
             except TelegramApiDefiniteRejectError as reject_err:
@@ -471,6 +624,139 @@ class TelegramClient:
                     for update in data.get("result", []):
                         up_id = update.get("update_id", 0)
                         msg = update.get("message", {})
+                        callback_update = update.get("callback_query")
+
+                        # ── Inline-button callback path ──
+                        if callback_update:
+                            matches, cb_query_id, _cb_index = (
+                                self.callback_data_is_for_current_prompt(
+                                    callback_update,
+                                    self.settings.telegram_chat_id,
+                                    reg.nonce,
+                                    prompt_message_id,
+                                )
+                            )
+                            if not matches:
+                                # Foreign chat/nonce/prompt: never satisfies this
+                                # waiter; advance the cursor and clear the spinner.
+                                cursor_saved = await self.telegram_repo.save_cursor(
+                                    self.bot_chat_key, up_id, poll_lease
+                                )
+                                if not cursor_saved:
+                                    await self.telegram_repo.release_poll_lease(
+                                        self.bot_chat_key, poll_lease
+                                    )
+                                    await self.telegram_repo.release_waiter(
+                                        correlation_key, waiter_lease.lease_id
+                                    )
+                                    return CorrelationWaitResult(
+                                        status=CorrelationStatus.STORAGE_ERROR,
+                                        error_reason="cursor_save_failed_nonmatching",
+                                        nonce=reg.nonce,
+                                    )
+                                self._last_update_id = max(self._last_update_id or 0, up_id)
+                                await self._answer_callback_query(cb_query_id or "")
+                                continue
+
+                            rec_res = await self.telegram_repo.record_callback_reply(
+                                correlation_key,
+                                callback_update.get("data"),
+                                up_id,
+                                prompt_message_id,
+                                waiter_lease.lease_id,
+                                callback_query_id=cb_query_id or None,
+                            )
+                            if rec_res.duplicate and not rec_res.accepted:
+                                # Idempotent redelivery: cursor advances, spinner
+                                # clears, and the current waiter keeps waiting.
+                                cursor_saved = await self.telegram_repo.save_cursor(
+                                    self.bot_chat_key, up_id, poll_lease
+                                )
+                                if not cursor_saved:
+                                    await self.telegram_repo.release_poll_lease(
+                                        self.bot_chat_key, poll_lease
+                                    )
+                                    await self.telegram_repo.release_waiter(
+                                        correlation_key, waiter_lease.lease_id
+                                    )
+                                    return CorrelationWaitResult(
+                                        status=CorrelationStatus.STORAGE_ERROR,
+                                        error_reason="cursor_save_failed_duplicate_callback",
+                                        nonce=reg.nonce,
+                                    )
+                                self._last_update_id = max(self._last_update_id or 0, up_id)
+                                await self._answer_callback_query(
+                                    cb_query_id or "", "Already recorded"
+                                )
+                                continue
+
+                            if rec_res.accepted:
+                                # Durable reply first, then cursor, then ack.
+                                cursor_saved = await self.telegram_repo.save_cursor(
+                                    self.bot_chat_key, up_id, poll_lease
+                                )
+                                if not cursor_saved:
+                                    await self.telegram_repo.release_poll_lease(
+                                        self.bot_chat_key, poll_lease
+                                    )
+                                    await self.telegram_repo.release_waiter(
+                                        correlation_key, waiter_lease.lease_id
+                                    )
+                                    return CorrelationWaitResult(
+                                        status=CorrelationStatus.STORAGE_ERROR,
+                                        error_reason="cursor_save_failed",
+                                        nonce=reg.nonce,
+                                    )
+
+                                self._last_update_id = max(self._last_update_id or 0, up_id)
+                                await self._answer_callback_query(
+                                    cb_query_id or "", f"Recorded: {rec_res.reply_text or ''}"
+                                )
+                                consume_res = await self.telegram_repo.consume_reply(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                await self.telegram_repo.release_poll_lease(
+                                    self.bot_chat_key, poll_lease
+                                )
+                                await self.telegram_repo.release_waiter(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                if not consume_res.consumed:
+                                    return CorrelationWaitResult(
+                                        status=CorrelationStatus.STORAGE_ERROR,
+                                        error_reason="consume_reply_failed",
+                                        nonce=reg.nonce,
+                                    )
+
+                                return CorrelationWaitResult(
+                                    status=CorrelationStatus.REPLIED,
+                                    reply_text=consume_res.reply_text,
+                                    reply_kind=consume_res.reply_kind,
+                                    reply_option_index=consume_res.reply_option_index,
+                                    nonce=reg.nonce,
+                                )
+
+                            # Rejected for another reason: treat like any
+                            # non-matching update (advance cursor only).
+                            cursor_saved = await self.telegram_repo.save_cursor(
+                                self.bot_chat_key, up_id, poll_lease
+                            )
+                            if not cursor_saved:
+                                await self.telegram_repo.release_poll_lease(
+                                    self.bot_chat_key, poll_lease
+                                )
+                                await self.telegram_repo.release_waiter(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                return CorrelationWaitResult(
+                                    status=CorrelationStatus.STORAGE_ERROR,
+                                    error_reason="cursor_save_failed_nonmatching",
+                                    nonce=reg.nonce,
+                                )
+                            self._last_update_id = max(self._last_update_id or 0, up_id)
+                            await self._answer_callback_query(cb_query_id or "")
+                            continue
+
                         reply = correlated_reply_text(
                             msg,
                             self.settings.telegram_chat_id,
@@ -525,6 +811,8 @@ class TelegramClient:
                                 return CorrelationWaitResult(
                                     status=CorrelationStatus.REPLIED,
                                     reply_text=consume_res.reply_text,
+                                    reply_kind=consume_res.reply_kind,
+                                    reply_option_index=consume_res.reply_option_index,
                                     nonce=reg.nonce,
                                 )
                         else:
@@ -563,6 +851,8 @@ class TelegramClient:
                 return CorrelationWaitResult(
                     status=curr.status,
                     reply_text=curr.reply_text,
+                    reply_kind=curr.reply_kind,
+                    reply_option_index=curr.reply_option_index,
                     nonce=reg.nonce,
                 )
             return CorrelationWaitResult(
@@ -576,6 +866,79 @@ class TelegramClient:
             timed_out=True,
             nonce=reg.nonce,
         )
+
+    async def _recover_cached_callback_reply(
+        self,
+        *,
+        correlation_key: str,
+        reg,
+        waiter_lease_id: str,
+    ) -> CorrelationWaitResult:
+        """Complete cursor/ack recovery for an already-recorded callback reply.
+
+        Ordering is preserved: the durable reply already exists; the persisted
+        ``reply_update_id`` is advanced into the durable cursor, the persisted
+        callback-query ID (when available) is acknowledged, and only then is the
+        reply consumed and returned. A crash at any boundary stays idempotent:
+        the next invocation repeats whichever steps are still outstanding.
+        """
+        poll_lease = await self.telegram_repo.claim_poll_lease(
+            self.bot_chat_key,
+            lease_duration_seconds=self.settings.telegram_poll_lease_seconds,
+        )
+        if not poll_lease:
+            await self.telegram_repo.release_waiter(correlation_key, waiter_lease_id)
+            return CorrelationWaitResult(
+                status=CorrelationStatus.STORAGE_ERROR,
+                error_reason="concurrent_bot_poller_active",
+                nonce=reg.nonce,
+            )
+
+        try:
+            # The register result carries identity only; reply metadata lives on
+            # the durable correlation document.
+            corr_doc = await self.telegram_repo.get_correlation(correlation_key)
+            if corr_doc is None:
+                return CorrelationWaitResult(
+                    status=CorrelationStatus.STORAGE_ERROR,
+                    error_reason="correlation_not_found_during_callback_recovery",
+                    nonce=reg.nonce,
+                )
+
+            reply_update_id = corr_doc.reply_update_id
+            if isinstance(reply_update_id, int) and reply_update_id > 0:
+                cursor_saved = await self.telegram_repo.save_cursor(
+                    self.bot_chat_key, reply_update_id, poll_lease
+                )
+                if not cursor_saved:
+                    return CorrelationWaitResult(
+                        status=CorrelationStatus.STORAGE_ERROR,
+                        error_reason="cursor_save_failed_callback_recovery",
+                        nonce=reg.nonce,
+                    )
+                self._last_update_id = max(self._last_update_id or 0, reply_update_id)
+
+            cbq_id = corr_doc.reply_callback_query_id
+            if cbq_id:
+                await self._answer_callback_query(cbq_id, f"Recorded: {corr_doc.reply_text or ''}")
+
+            consume_res = await self.telegram_repo.consume_reply(correlation_key, waiter_lease_id)
+            if not consume_res.consumed:
+                return CorrelationWaitResult(
+                    status=CorrelationStatus.STORAGE_ERROR,
+                    error_reason="consume_reply_failed",
+                    nonce=reg.nonce,
+                )
+            return CorrelationWaitResult(
+                status=CorrelationStatus.REPLIED,
+                reply_text=consume_res.reply_text,
+                reply_kind=consume_res.reply_kind or "callback",
+                reply_option_index=consume_res.reply_option_index,
+                nonce=reg.nonce,
+            )
+        finally:
+            await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+            await self.telegram_repo.release_waiter(correlation_key, waiter_lease_id)
 
     async def drain_outbox(self, limit: int = 10) -> OutboxDrainResult:
         """Drain due queued outbox records with checked delivery and bounded backoff."""

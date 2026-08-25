@@ -11,8 +11,8 @@
 | 6. Telegram recovery and durable notifications | Reviewed + committed | `681a1a1` |
 | 7. Execution decomposition and fixture tests | Reviewed + committed | `eb7320c` |
 | 8. LLM/database/browser performance | Reviewed + committed | `f158ff9` |
-| 9. Structured observability and summaries | Reviewed + ready to commit | — |
-| 10. Doctor CLI and operator enhancements | Queued | — |
+| 9. Structured observability and summaries | Reviewed + committed | `ea2f1c9` |
+| 10. Doctor CLI and operator enhancements | Reviewed + ready to commit | — |
 | 11. Final coherence sweep | Queued | — |
 
 ## Review Notes
@@ -37,6 +37,8 @@
 - Task 8 independent gates: diff and lock checks pass, Ruff format/lint pass across 66 files, Pyright reports 0 issues, 156 focused performance/search/workflow/idempotency/Telegram tests pass in 35.49 seconds without unexpected socket warnings, 282 project tests pass with the Windows asyncio self-pipe override, the socket-block assertion passes separately under normal strict-offline policy, dependency sync and sdist/wheel builds succeed, and no live LLM, MongoDB, browser, Telegram, or LinkedIn verification was performed.
 - Task 9 accepted after four reviewer-directed OpenCode correction passes: workflow and execution prints are replaced by centralized structured events; JSONL file logs and console output are recursively redacted and strictly bounded with deterministic set handling and a global iterator budget; durable atomic run summaries derive counts from authoritative outcomes; and completed, paused, interrupted, cancelled, failed, cleanup-failure, and publication-failure paths preserve exception precedence while exhausting finalization.
 - Task 9 independent gates: diff and lock checks pass, Ruff format/lint pass across 70 files, Pyright reports 0 issues, 162 focused observability/summary/workflow/safety tests pass, 336 project tests pass with the Windows asyncio self-pipe override, the strict socket-block assertion passes separately, locked production and development dependency syncs succeed, sdist and wheel builds succeed, and no live LLM, MongoDB, browser, Telegram, or LinkedIn verification was performed.
+- Task 10 accepted after reviewer-directed OpenCode correction passes: offline diagnostics are non-mutating and live checks are explicitly opt-in and bounded; search location/recency remain stable across checkpoints with explicit override persistence; repost and dry-run metrics use canonical durable outcome fields; Telegram buttons preserve exact action identity through crash recovery; and every manual-review outcome is durably queued or remains bounded, visible, and reconstructable through authoritative outcomes.
+- Task 10 independent gates: diff and lock checks pass, Ruff format/lint pass across 81 files, Pyright reports 0 issues, 272 focused operator/diagnostic/recovery tests pass, 498 project tests pass with one strict-socket test deselected, the strict socket-block assertion passes separately, locked development dependency sync succeeds, sdist and wheel builds succeed, the production-source secret scan is clean, and no live external verification was performed.
 
 ## Needs Your Eyes
 

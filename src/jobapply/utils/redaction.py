@@ -73,11 +73,18 @@ def _redact_mongodb_uri(text: str) -> str:
 def _get_dynamic_secret_literals() -> list[str]:
     """Retrieve non-empty configured secret strings for exact matching."""
     secrets = set()
+    # Both plain and JOBAPPLY_-prefixed environment names are covered so a
+    # token configured only under its prefixed name is still scrubbed from
+    # every durable/logged payload.
     env_keys = [
         "GOOGLE_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "LANGSMITH_API_KEY",
         "MONGODB_URL",
+        "JOBAPPLY_GOOGLE_API_KEY",
+        "JOBAPPLY_TELEGRAM_BOT_TOKEN",
+        "JOBAPPLY_LANGSMITH_API_KEY",
+        "JOBAPPLY_MONGODB_URL",
     ]
     for key in env_keys:
         val = os.getenv(key)

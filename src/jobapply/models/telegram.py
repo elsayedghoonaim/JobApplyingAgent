@@ -112,6 +112,7 @@ class TelegramCorrelation(BaseModel):
     prompt_hash: str
     nonce: str
     prompt_text: str
+    inline_actions: list[str] = Field(default_factory=list)
     prompt_in_flight: bool = False
     prompt_message_id: Optional[int] = None
     prompt_sent_at: Optional[datetime] = None
@@ -119,6 +120,9 @@ class TelegramCorrelation(BaseModel):
     lease_id: Optional[str] = None
     lease_expires_at: Optional[datetime] = None
     reply_text: Optional[str] = None
+    reply_kind: Optional[str] = None  # "text" | "callback"
+    reply_option_index: Optional[int] = Field(default=None, ge=0)
+    reply_callback_query_id: Optional[str] = None
     reply_update_id: Optional[int] = None
     reply_message_id: Optional[int] = None
     replied_at: Optional[datetime] = None
@@ -147,6 +151,7 @@ class CorrelationRegisterResult(BaseModel):
     correlation_key: str
     nonce: str
     prompt_text: str
+    inline_actions: list[str] = Field(default_factory=list)
     prompt_in_flight: bool = False
     prompt_message_id: Optional[int] = None
     status: CorrelationStatus
@@ -170,6 +175,9 @@ class CorrelationReplyResult(BaseModel):
     accepted: bool
     status: CorrelationStatus
     reply_text: Optional[str] = None
+    reply_kind: Optional[str] = None  # "text" | "callback"
+    option_index: Optional[int] = None
+    duplicate: bool = False
     reason: Optional[str] = None
 
 
@@ -178,6 +186,8 @@ class CorrelationConsumeResult(BaseModel):
 
     consumed: bool
     reply_text: Optional[str] = None
+    reply_kind: Optional[str] = None  # "text" | "callback"
+    reply_option_index: Optional[int] = None
     reason: Optional[str] = None
 
 
@@ -186,6 +196,8 @@ class CorrelationWaitResult(BaseModel):
 
     status: CorrelationStatus
     reply_text: Optional[str] = None
+    reply_kind: Optional[str] = None  # "text" | "callback"
+    reply_option_index: Optional[int] = None
     timed_out: bool = False
     nonce: Optional[str] = None
     error_reason: Optional[str] = None

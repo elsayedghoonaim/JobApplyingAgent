@@ -1,5 +1,7 @@
 """Send a clear plain-text Telegram summary at the end of a session."""
 
+from typing import Any, cast
+
 from langsmith.run_helpers import trace
 
 from jobapply.models.telegram import OutboxStatus
@@ -81,6 +83,38 @@ def format_session_summary(state: JobApplyState) -> str:
         ]
     )
 
+    # Authoritative dry-run/repost metrics derived from per-outcome markers.
+    marked = [item for item in outcomes if item.get("dry_run") is True]
+    marked_dry_runs = [item for item in marked if item.get("status") == "dry_run"]
+    dry_run_reposts = [item for item in marked_dry_runs if item.get("is_repost")]
+    reposts = [item for item in marked if item.get("is_repost")]
+    pending_queue_items = list(state.get("manual_review_queue_pending") or [])
+    lines.extend(
+        [
+            "",
+            "DRY-RUN METRICS (per-outcome markers)",
+            f"🧪 Dry-run outcomes at Submit boundary (not clicked): {len(marked_dry_runs)}",
+            f"⚠️ Needs manual review: {sum(1 for i in marked if i.get('status') == 'needs_manual_review')}",
+            f"⏭ Skipped: {sum(1 for i in marked if i.get('status') == 'skipped')}",
+            f"❌ Failed: {sum(1 for i in marked if i.get('status') == 'failed')}",
+            f"🔁 Reposted dry-run outcomes: {len(dry_run_reposts)}"
+            f" (all marked outcomes: {len(reposts)})",
+            "✅ Confirmed submissions from dry runs: 0",
+        ]
+    )
+
+    if pending_queue_items:
+        lines.append(
+            f"📋 Manual-review queue items awaiting durable enqueue: {len(pending_queue_items)} "
+            "(will retry; review the durable summary)"
+        )
+    overflow_count = int(state.get("manual_review_queue_overflow") or 0)
+    if overflow_count:
+        lines.append(
+            f"⚠️ Manual-review queue overflow this run: {overflow_count} "
+            "(pending list full; newest failures recover via authoritative outcomes)"
+        )
+
     if submitted:
         lines.extend(["", "CONFIRMED SUBMISSIONS"])
         for index, outcome in enumerate(submitted[:10], 1):
@@ -133,13 +167,28 @@ def format_session_summary(state: JobApplyState) -> str:
 
 
 async def notification_node(state: JobApplyState) -> dict:
-    """Send the final structured session summary via durable outbox."""
+    """Send the final structured session summary via durable outbox.
+
+    Before composing the summary this node is the central safe retry boundary
+    for any manual-review queue items whose durable enqueue failed earlier:
+    successfully flushed items leave pending state; failures stay visible in
+    state, the durable summary, and the Telegram summary itself.
+    """
+    from jobapply.utils.manual_review import flush_manual_review_queue
+
+    flush_update = await flush_manual_review_queue(state)
+    if flush_update:
+        merged: dict[str, Any] = {**dict(state), **flush_update}
+        state = cast(JobApplyState, merged)
+
     message = format_session_summary(state)
     outcomes = list(state.get("application_outcomes") or [])
     run_id = str(state.get("run_id") or "default_run")
     idempotency_key = f"summary:{run_id}"
 
     telegram = TelegramClient()
+
+    updates: dict = dict(flush_update)
 
     try:
         async with trace(
@@ -166,19 +215,25 @@ async def notification_node(state: JobApplyState) -> dict:
             ) = await telegram.outbox_repo.get_pending_and_unknown_counts()
 
             if result.success and result.status == OutboxStatus.SENT:
-                return {
-                    "notification_sent": True,
-                    "outbox_pending_count": pending_count,
-                    "outbox_unknown_count": unknown_count,
-                }
+                updates.update(
+                    {
+                        "notification_sent": True,
+                        "outbox_pending_count": pending_count,
+                        "outbox_unknown_count": unknown_count,
+                    }
+                )
+                return updates
             else:
                 err_str = f"Summary notification queued/retryable ({result.status.value}): {result.reason or 'delivery not confirmed'}"
-                return {
-                    "notification_sent": False,
-                    "outbox_pending_count": pending_count,
-                    "outbox_unknown_count": unknown_count,
-                    "errors": list(state.get("errors") or []) + [err_str],
-                }
+                updates.update(
+                    {
+                        "notification_sent": False,
+                        "outbox_pending_count": pending_count,
+                        "outbox_unknown_count": unknown_count,
+                        "errors": list(state.get("errors") or []) + [err_str],
+                    }
+                )
+                return updates
 
     except Exception as exc:
         from jobapply.utils.account_safety import sanitize_evidence_string
@@ -194,7 +249,10 @@ async def notification_node(state: JobApplyState) -> dict:
             node="notification_node",
             exc=exc,
         )
-        return {
-            "notification_sent": False,
-            "errors": list(state.get("errors") or []) + [err_str],
-        }
+        updates.update(
+            {
+                "notification_sent": False,
+                "errors": list(state.get("errors") or []) + [err_str],
+            }
+        )
+        return updates

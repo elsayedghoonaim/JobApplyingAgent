@@ -72,10 +72,68 @@ cookies or passwords.
 ## Telegram form questions
 
 When Easy Apply exposes an unanswered required field, the bot sends only the
-question (and available options, when applicable). Send your answer normally as
-the next Telegram message; no nonce or special format is required. Gemma
-extracts the exact numeric value or option and fills the form. Questions are
-asked one at a time as LinkedIn reveals each application page.
+question (and available options, when applicable). Small bounded option lists
+also arrive as tappable inline buttons (plus a persistent **Skip Job** button);
+ordinary text replies remain fully supported at any time — no nonce or special
+format is required. Gemma extracts the exact numeric value or option and fills
+the form. Questions are asked one at a time as LinkedIn reveals each
+application page. Button presses are validated against the exact durable
+prompt/nonce, persisted before acknowledgment, and duplicate presses are
+idempotent.
+
+## Search location and recency
+
+Configure the search scope in `.env` or per run on the CLI:
+
+```env
+JOBAPPLY_SEARCH_LOCATION=Worldwide
+JOBAPPLY_SEARCH_RECENCY_DAYS=
+```
+
+- `JOBAPPLY_SEARCH_LOCATION` is trimmed, bounded, and safely URL-encoded; the default is `Worldwide`.
+- `JOBAPPLY_SEARCH_RECENCY_DAYS` accepts a bounded positive number of days (1–30). Unset, empty, or `0` disables the recency filter entirely.
+- CLI overrides win over `.env`: `uv run jobapply --location "Berlin, Germany" --recency-days 7`.
+- Use `--recency-days 0` to explicitly disable filtering for one run.
+- Effective values are stored in run/checkpoint state so resumed runs keep identical search behavior.
+- Reposted listings are flagged non-destructively (`is_repost`, bounded redacted evidence) and never filtered, deprioritized, or counted against quotas.
+
+## Doctor diagnostics
+
+```powershell
+uv run jobapply doctor                # offline, non-mutating; zero network calls
+uv run jobapply doctor --live-checks  # opt-in bounded read-only probes
+```
+
+Offline checks cover Python version, settings validation, the Gemma-only model
+constraint, user-data files and safe resolved paths, output directory access,
+Edge executable configuration and dedicated-profile containment, credential
+presence (reported only as configured/missing), MongoDB URL syntax (no
+connection), and search configuration. Results print as PASS/WARN/FAIL with a
+final count; the exit code is zero when all required checks pass.
+
+`--live-checks` additionally performs short-timeout, read-only probes of the
+configured MongoDB deployment (admin ping), Telegram (`getMe` only — no
+messages are sent), the Gemma endpoint availability (header authentication),
+and the managed Edge CDP endpoint. Live checks never navigate to LinkedIn,
+never invoke the LLM, never write data, and always close their resources.
+
+## Manual review queue
+
+Every `needs_manual_review` outcome is durably queued (idempotent across
+resume/replay) in the configured collection
+(`JOBAPPLY_MANUAL_REVIEW_COLLECTION=manual_review_queue`). Ambiguous
+`submission_unknown` items stay visibly distinct, are never auto-retried or
+auto-resolved, and require an explicit safe resolution label. Operator
+commands:
+
+```powershell
+uv run jobapply review list [--limit N]
+uv run jobapply review acknowledge <item-id> [--note "..."]
+uv run jobapply review resolve <item-id> [--note "..."] --label confirmed_not_submitted|confirmed_submitted|requires_followup
+```
+
+Acknowledging or resolving never increments application counts or alters
+submission truth, and no browser retry is ever triggered from the queue.
 
 ## One-command live run
 

@@ -3,6 +3,7 @@
 from langsmith.run_helpers import trace
 
 from jobapply.models.job import CombinedJobAnalysis
+from jobapply.nodes.outcomes import job_repost_persistence_fields
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.dedup import DeduplicationStore
@@ -263,6 +264,7 @@ async def qualification_node(state: JobApplyState) -> dict:
                     "key_matches": result.key_matches,
                     "gaps": effective_gaps,
                     "status": status,
+                    **job_repost_persistence_fields(current_job),
                 }
 
                 if exclusion_reason:

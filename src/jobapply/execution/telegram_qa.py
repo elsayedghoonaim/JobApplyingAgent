@@ -12,11 +12,27 @@ from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
 from jobapply.utils.observability import log_event
 from jobapply.utils.telegram import TelegramClient
+from jobapply.utils.telegram_storage import MAX_INLINE_ACTIONS, sanitize_inline_actions
+
+SKIP_JOB_ACTION_LABEL = "Skip Job"
 
 _question_translation_cache: dict[
     tuple[str, tuple[str, ...], str],
     tuple[str, list[str]],
 ] = {}
+
+
+def reply_matches_skip_action(reply: str | None) -> bool:
+    """Recognize explicit text replies and Skip-Job button labels."""
+    if not reply:
+        return False
+    if is_skip_job_reply(reply):
+        return True
+    normalized = " ".join(str(reply).casefold().split())
+    return normalized.lstrip("⏭️✅📄❌ ").strip() in {
+        SKIP_JOB_ACTION_LABEL.casefold(),
+        f"/{SKIP_JOB_ACTION_LABEL.casefold()}",
+    }
 
 
 class UserSkippedJob(Exception):
@@ -259,6 +275,15 @@ async def ask_user_for_question(
         message += "\n\n" + "\n".join(f"- {option}" for option in display_options)
     message += "\n\n- /skip — Skip this job"
 
+    # Small bounded option lists get inline buttons plus a persistent skip
+    # button; long/free-text questions keep accepting ordinary replies.
+    candidate_actions = list(display_options) + [SKIP_JOB_ACTION_LABEL]
+    inline_actions = (
+        sanitize_inline_actions(candidate_actions)
+        if len(candidate_actions) <= MAX_INLINE_ACTIONS
+        else [SKIP_JOB_ACTION_LABEL]
+    )
+
     safe_run_id = str(run_id or job.get("run_id") or "default_run")
     canonical_job_id = canonicalize_job_id(job.get("job_id", "unknown")) or "unknown"
     q_hash = hashlib.sha256(question_text.strip().lower().encode("utf-8")).hexdigest()[:16]
@@ -272,6 +297,7 @@ async def ask_user_for_question(
             prompt_text=message,
             timeout=settings.form_qa_timeout_seconds,
             job_id=canonical_job_id,
+            inline_actions=inline_actions,
         )
     except Exception as exc:
         raise FormQaInfrastructureError(
@@ -295,7 +321,28 @@ async def ask_user_for_question(
 
     if timed_out or reply is None:
         return None, True
-    if is_skip_job_reply(reply):
+
+    # Callback presses carry their exact persisted option index: identity comes
+    # from the durable action list, never from the rendered/truncated label.
+    if wait_res.reply_kind == "callback" and wait_res.reply_option_index is not None:
+        index = wait_res.reply_option_index
+        if inline_actions and 0 <= index < len(inline_actions):
+            chosen_action = inline_actions[index]
+            if chosen_action == SKIP_JOB_ACTION_LABEL:
+                raise UserSkippedJob(question_text)
+            clean_options = [option for option in (options or []) if option]
+            if index < len(clean_options):
+                return clean_options[index], False
+        # Out-of-range indices cannot happen through validated storage; fall
+        # back to text parsing rather than guessing an unrelated option.
+        log_event(
+            "warning",
+            "telegram_qa.callback_index_unresolvable",
+            "Callback option index could not be resolved to a form option.",
+            node="telegram_qa",
+        )
+
+    if reply_matches_skip_action(reply):
         raise UserSkippedJob(question_text)
     return (
         await _extract(

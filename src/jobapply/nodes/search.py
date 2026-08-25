@@ -2,7 +2,6 @@
 
 import asyncio
 import re
-from urllib.parse import urlencode
 
 from langsmith.run_helpers import trace
 
@@ -59,16 +58,28 @@ def _account_safety_search_update(state: JobApplyState, detection) -> dict:
     }
 
 
-def build_search_url(base_url: str, query: str, page_num: int) -> str:
-    """Build a correctly encoded LinkedIn Easy Apply search URL."""
-    params = {
-        "keywords": query,
-        "f_AL": "true",
-        "location": "Worldwide",
-        "f_TPR": "r86400",
-        "start": (page_num - 1) * 25,
-    }
-    return f"{base_url.rstrip('/')}/jobs/search/?{urlencode(params)}"
+def build_search_url(
+    base_url: str,
+    query: str,
+    page_num: int,
+    *,
+    location: str | None = None,
+    recency_days: int | None = None,
+) -> str:
+    """Build a correctly encoded LinkedIn Easy Apply search URL.
+
+    Location defaults to Worldwide; recency_days (bounded 1-30) maps
+    deterministically onto LinkedIn's f_TPR parameter and None disables it.
+    """
+    from jobapply.utils.search_config import build_linkedin_search_url
+
+    return build_linkedin_search_url(
+        base_url,
+        query,
+        page_num,
+        location=location,
+        recency_days=recency_days,
+    )
 
 
 def text_indicates_applied_card_status(text: str | None) -> bool:
@@ -106,6 +117,74 @@ async def find_applied_status_on_card(card) -> str | None:
     for candidate in candidates or []:
         if text_indicates_applied_card_status(candidate):
             return candidate
+    return None
+
+
+REPOST_STATUS_PATTERN = re.compile(
+    r"^reposted(?:(?: by .{0,40})|(?: \d{1,3} (?:second|minute|hour|day|week|month|year)s? ago))?$",
+    re.IGNORECASE,
+)
+MAX_REPOST_EVIDENCE_LENGTH = 80
+
+
+def text_indicates_repost(text: str | None) -> bool:
+    """Recognize explicit LinkedIn repost status phrases only.
+
+    Accepts status-like metadata such as "Reposted", "Reposted 2 weeks ago",
+    or "Reposted by <name>". Arbitrary title/company text merely containing
+    the word "repost" (e.g. "Repost Coordinator") is never evidence.
+    """
+    if not text:
+        return False
+    normalized = " ".join(str(text).split())
+    return REPOST_STATUS_PATTERN.match(normalized) is not None
+
+
+async def find_repost_indicator_on_card(card) -> str | None:
+    """Detect visible repost indicators from already-loaded card metadata.
+
+    Reads only bounded footer/metadata/status elements of the current card DOM
+    while it is attached — no extra navigation, never title/company/link
+    content. Candidate count and text length are capped inside the browser.
+    Returns bounded, redacted evidence text or None.
+    """
+    from jobapply.utils.redaction import redact_string
+
+    try:
+        candidates = await card.evaluate(
+            r"""card => {
+                const nodes = [...card.querySelectorAll(
+                    '.job-card-container__footer-item, '
+                  + '.job-card-container__footer, '
+                  + '.job-card-container__metadata-wrapper li, '
+                  + '.job-card-container__metadata-wrapper span'
+                )];
+                const excluded = node => node.closest(
+                    'a.job-card-container__link, '
+                  + '.artdeco-entity-lockup__title, '
+                  + '.artdeco-entity-lockup__subtitle'
+                );
+                return nodes
+                    .filter(node => !excluded(node))
+                    .filter(node => node.getClientRects().length > 0)
+                    .flatMap(node => [
+                        (node.getAttribute('aria-label') || '').trim(),
+                        (node.innerText || '').trim(),
+                    ])
+                    .filter(Boolean)
+                    .slice(0, 20)
+                    .map(text => String(text).slice(0, 120));
+            }"""
+        )
+    except Exception:
+        return None
+
+    bounded_candidates = list(candidates or [])[:40]
+    for candidate in bounded_candidates:
+        candidate_text = str(candidate)[:160]
+        if text_indicates_repost(candidate_text):
+            evidence = " ".join(candidate_text.split())
+            return redact_string(evidence)[:MAX_REPOST_EVIDENCE_LENGTH]
     return None
 
 
@@ -235,7 +314,19 @@ async def search_node(state: JobApplyState) -> dict:
     page_num = state["current_page"]
     query = state["search_queries"][query_index]
 
-    search_url = build_search_url(settings.linkedin_base_url, query, page_num)
+    # Effective location/recency live in checkpoint state so resumed runs stay
+    # stable; legacy checkpoints fall back to configured settings.
+    from jobapply.utils.search_config import resolve_state_search_params
+
+    effective_location, effective_recency = resolve_state_search_params(state, settings)
+
+    search_url = build_search_url(
+        settings.linkedin_base_url,
+        query,
+        page_num,
+        location=effective_location,
+        recency_days=effective_recency,
+    )
 
     job_listings = []
 
@@ -508,6 +599,12 @@ async def search_node(state: JobApplyState) -> dict:
                             else "Unknown"
                         )
 
+                        # Non-destructive repost detection BEFORE any click or
+                        # navigation, while the card is guaranteed attached:
+                        # reads only footer/metadata/status elements and never
+                        # excludes or deprioritizes a job.
+                        repost_evidence = await find_repost_indicator_on_card(fresh_card)
+
                         log_event(
                             "debug",
                             "search.card_extracting",
@@ -553,6 +650,8 @@ async def search_node(state: JobApplyState) -> dict:
                                 "location": location,
                                 "url": f"https://www.linkedin.com/jobs/view/{job_id}",
                                 "description": bounded_description,
+                                "is_repost": bool(repost_evidence),
+                                "repost_evidence": repost_evidence,
                             }
                         )
                         log_event(
@@ -562,6 +661,9 @@ async def search_node(state: JobApplyState) -> dict:
                             run_id=str(state.get("run_id") or "") or None,
                             job_id=job_id,
                             node="search_node",
+                            details={
+                                "is_repost": bool(repost_evidence),
+                            },
                         )
 
                         await asyncio.sleep(get_randomized_delay() / 2)  # Small delay between cards

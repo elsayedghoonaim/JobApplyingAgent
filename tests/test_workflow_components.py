@@ -888,10 +888,13 @@ async def test_notification_stage_in_isolation(mock_telegram_class):
         ],
     )
     result = await notification_node(state)
+    # The notification stage is also the central manual-review flush boundary,
+    # so its state update carries the (emptied) durable pending list.
     assert result == {
         "notification_sent": True,
         "outbox_pending_count": 0,
         "outbox_unknown_count": 0,
+        "manual_review_queue_pending": [],
     }
     telegram.enqueue_and_deliver.assert_awaited_once()
 

@@ -79,6 +79,84 @@ def make_bot_chat_key(bot_token: str, chat_id: str) -> str:
     return f"b_{tok_hash[:24]}_c_{chat_hash[:24]}"
 
 
+# ── Inline keyboard callback data codec ──────────────────────────────────────
+#
+# Callback data is opaque and bounded (<=64 bytes per Telegram's limit): it
+# carries only a fixed prefix, the correlation nonce, and a button index.
+# Question text, job data, secrets, and answers never enter callback data.
+
+CALLBACK_DATA_PREFIX = "jb"
+CALLBACK_DATA_MAX_BYTES = 64
+MAX_INLINE_ACTIONS = 8
+MAX_INLINE_ACTION_LENGTH = 64
+INLINE_KEYBOARD_BUTTONS_PER_ROW = 3
+
+
+def sanitize_inline_actions(actions: Optional[list[str]]) -> list[str]:
+    """Bound, redact, and cap an inline action label list."""
+    if not actions:
+        return []
+    sanitized: list[str] = []
+    for action in actions:
+        clean = bound_string(str(action or ""), max_length=MAX_INLINE_ACTION_LENGTH)
+        if clean:
+            sanitized.append(clean)
+        if len(sanitized) >= MAX_INLINE_ACTIONS:
+            break
+    return sanitized
+
+
+def encode_callback_data(nonce: str, index: int) -> str:
+    """Encode one opaque callback payload bound to the exact prompt nonce."""
+    return f"{CALLBACK_DATA_PREFIX}|{nonce}|{int(index)}"
+
+
+def decode_callback_data(data: str | None) -> Optional[tuple[str, int]]:
+    """Decode opaque callback data; returns (nonce, index) or None when malformed."""
+    if not isinstance(data, str):
+        return None
+    parts = data.split("|")
+    if len(parts) != 3 or parts[0] != CALLBACK_DATA_PREFIX:
+        return None
+    nonce = parts[1]
+    try:
+        index = int(parts[2])
+    except ValueError:
+        return None
+    if index < 0:
+        return None
+    return nonce, index
+
+
+def build_inline_keyboard(nonce: str, actions: list[str]) -> list[list[dict]]:
+    """Build Telegram inline keyboard rows with bounded opaque callback data."""
+    rows: list[list[dict]] = []
+    row: list[dict] = []
+    for index, action in enumerate(actions[:MAX_INLINE_ACTIONS]):
+        row.append(
+            {
+                "text": action[:MAX_INLINE_ACTION_LENGTH],
+                "callback_data": encode_callback_data(nonce, index)[:CALLBACK_DATA_MAX_BYTES],
+            }
+        )
+        if len(row) >= INLINE_KEYBOARD_BUTTONS_PER_ROW:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
+def actions_payload_signature(actions: Optional[list[str]]) -> str:
+    """Stable short signature of a sanitized action list for identity comparison."""
+    import json as _json
+
+    canonical = _json.dumps(
+        sanitize_inline_actions(actions), ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
 class TelegramPersistenceManager:
     """Shared single-client manager with independent index lifecycle states."""
 
@@ -370,6 +448,7 @@ class TelegramRepository:
         prompt_text: str,
         job_id: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
+        inline_actions: Optional[list[str]] = None,
     ) -> CorrelationRegisterResult:
         """Register a correlation intent with collision-resistant hashing and stable nonce."""
         await self.ensure_indexes()
@@ -381,6 +460,7 @@ class TelegramRepository:
         safe_job_id = canonicalize_job_id(job_id) if job_id else None
         raw_prompt = redact_string(prompt_text or "")
         safe_meta = bound_and_redact_metadata(metadata or {})
+        safe_actions = sanitize_inline_actions(inline_actions)
 
         if not safe_key or not safe_purpose or not safe_run_id or not raw_prompt:
             return CorrelationRegisterResult(
@@ -389,6 +469,7 @@ class TelegramRepository:
                 correlation_key=safe_key,
                 nonce="",
                 prompt_text="",
+                inline_actions=safe_actions,
                 status=CorrelationStatus.STORAGE_ERROR,
                 reason="invalid_empty_fields",
             )
@@ -417,6 +498,8 @@ class TelegramRepository:
                 or existing.run_id != safe_run_id
                 or existing.job_id != safe_job_id
                 or existing.prompt_hash != prompt_hash
+                or actions_payload_signature(existing.inline_actions)
+                != actions_payload_signature(safe_actions)
             ):
                 return CorrelationRegisterResult(
                     registered=False,
@@ -424,6 +507,7 @@ class TelegramRepository:
                     correlation_key=safe_key,
                     nonce=existing.nonce,
                     prompt_text=existing.prompt_text,
+                    inline_actions=existing.inline_actions,
                     prompt_in_flight=existing.prompt_in_flight,
                     prompt_message_id=existing.prompt_message_id,
                     status=existing.status,
@@ -437,6 +521,7 @@ class TelegramRepository:
                 correlation_key=safe_key,
                 nonce=existing.nonce,
                 prompt_text=existing.prompt_text,
+                inline_actions=existing.inline_actions,
                 prompt_in_flight=existing.prompt_in_flight,
                 prompt_message_id=existing.prompt_message_id,
                 status=existing.status,
@@ -451,6 +536,7 @@ class TelegramRepository:
             "prompt_hash": prompt_hash,
             "nonce": nonce,
             "prompt_text": safe_prompt,
+            "inline_actions": safe_actions,
             "prompt_in_flight": False,
             "prompt_message_id": None,
             "prompt_sent_at": None,
@@ -478,6 +564,7 @@ class TelegramRepository:
                 correlation_key=safe_key,
                 nonce=nonce,
                 prompt_text=safe_prompt,
+                inline_actions=safe_actions,
                 prompt_in_flight=False,
                 prompt_message_id=None,
                 status=CorrelationStatus.PENDING,
@@ -490,6 +577,8 @@ class TelegramRepository:
                     or re_read.run_id != safe_run_id
                     or re_read.job_id != safe_job_id
                     or re_read.prompt_hash != prompt_hash
+                    or actions_payload_signature(re_read.inline_actions)
+                    != actions_payload_signature(safe_actions)
                 ):
                     return CorrelationRegisterResult(
                         registered=False,
@@ -497,6 +586,7 @@ class TelegramRepository:
                         correlation_key=safe_key,
                         nonce=re_read.nonce,
                         prompt_text=re_read.prompt_text,
+                        inline_actions=re_read.inline_actions,
                         prompt_in_flight=re_read.prompt_in_flight,
                         prompt_message_id=re_read.prompt_message_id,
                         status=re_read.status,
@@ -508,6 +598,7 @@ class TelegramRepository:
                     correlation_key=safe_key,
                     nonce=re_read.nonce,
                     prompt_text=re_read.prompt_text,
+                    inline_actions=re_read.inline_actions,
                     prompt_in_flight=re_read.prompt_in_flight,
                     prompt_message_id=re_read.prompt_message_id,
                     status=re_read.status,
@@ -770,6 +861,8 @@ class TelegramRepository:
                 "$set": {
                     "status": CorrelationStatus.REPLIED.value,
                     "reply_text": safe_reply,
+                    "reply_kind": "text",
+                    "reply_option_index": None,
                     "reply_update_id": int(update_id),
                     "reply_message_id": int(message_id),
                     "replied_at": now,
@@ -789,6 +882,7 @@ class TelegramRepository:
                 accepted=True,
                 status=CorrelationStatus.REPLIED,
                 reply_text=safe_reply,
+                reply_kind="text",
             )
 
         existing = await self.get_correlation(safe_key)
@@ -803,6 +897,143 @@ class TelegramRepository:
             accepted=False,
             status=CorrelationStatus.PENDING,
             reason="correlation_not_found",
+        )
+
+    async def record_callback_reply(
+        self,
+        correlation_key: str,
+        callback_data: str | None,
+        update_id: int,
+        prompt_message_id: int,
+        lease_id: str,
+        callback_query_id: str | None = None,
+    ) -> CorrelationReplyResult:
+        """Atomically persist a validated inline-button callback under the exact waiter lease.
+
+        Validation is fail-closed: chat identity and waiter lease are enforced by
+        the query, the opaque callback nonce must match this correlation, the
+        button index must resolve against the persisted action list, and the
+        callback must originate from the exact durable prompt message. A
+        duplicate redelivery is reported idempotently and never satisfies a
+        second waiter. The bounded callback-query ID is persisted so a crash at
+        any later boundary can still acknowledge it during recovery.
+        """
+        await self.ensure_indexes()
+        safe_key = bound_string(correlation_key, max_length=160)
+        safe_lease = bound_string(lease_id, max_length=64)
+        safe_cbq_id = bound_string(callback_query_id or "", max_length=64) or None
+        if not safe_key or not safe_lease:
+            return CorrelationReplyResult(
+                accepted=False,
+                status=CorrelationStatus.PENDING,
+                reason="invalid_identifiers",
+            )
+
+        existing = await self.get_correlation(safe_key)
+        if existing is None:
+            return CorrelationReplyResult(
+                accepted=False,
+                status=CorrelationStatus.PENDING,
+                reason="correlation_not_found",
+            )
+
+        decoded = decode_callback_data(callback_data)
+        if decoded is None:
+            return CorrelationReplyResult(
+                accepted=False,
+                status=existing.status,
+                reason="callback_data_malformed",
+            )
+        cb_nonce, cb_index = decoded
+        if cb_nonce != existing.nonce:
+            return CorrelationReplyResult(
+                accepted=False,
+                status=existing.status,
+                reason="callback_nonce_mismatch",
+            )
+        if (
+            not isinstance(prompt_message_id, int)
+            or existing.prompt_message_id != prompt_message_id
+        ):
+            return CorrelationReplyResult(
+                accepted=False,
+                status=existing.status,
+                reason="callback_prompt_message_mismatch",
+            )
+        actions = list(existing.inline_actions or [])
+        if cb_index >= len(actions):
+            return CorrelationReplyResult(
+                accepted=False,
+                status=existing.status,
+                reason="callback_option_index_out_of_range",
+            )
+        resolved_label = bound_string(redact_string(actions[cb_index]), max_length=512)
+
+        now = datetime.now(timezone.utc)
+        settings = get_settings()
+        ttl_expires = now + timedelta(seconds=settings.telegram_correlation_ttl_seconds)
+
+        res = self.correlations_col.find_one_and_update(
+            {
+                "correlation_key": safe_key,
+                "status": CorrelationStatus.PENDING.value,
+                "lease_id": safe_lease,
+                "prompt_message_id": int(prompt_message_id),
+            },
+            {
+                "$set": {
+                    "status": CorrelationStatus.REPLIED.value,
+                    "reply_text": resolved_label,
+                    "reply_kind": "callback",
+                    "reply_option_index": int(cb_index),
+                    "reply_callback_query_id": safe_cbq_id,
+                    "reply_update_id": int(update_id),
+                    "reply_message_id": int(prompt_message_id),
+                    "replied_at": now,
+                    "updated_at": now,
+                    "expires_at": ttl_expires,
+                }
+            },
+            return_document=True
+            if hasattr(self.correlations_col, "find_one_and_update")
+            else False,
+        )
+        if inspect.isawaitable(res):
+            res = await res
+
+        if res:
+            return CorrelationReplyResult(
+                accepted=True,
+                status=CorrelationStatus.REPLIED,
+                reply_text=resolved_label,
+                reply_kind="callback",
+                option_index=int(cb_index),
+            )
+
+        # Duplicate delivery (already durably accepted for this update): report
+        # idempotently without satisfying another waiter.
+        reread = await self.get_correlation(safe_key)
+        if (
+            reread is not None
+            and reread.status in (CorrelationStatus.REPLIED, CorrelationStatus.CONSUMED)
+            and reread.reply_kind == "callback"
+            and reread.reply_update_id == int(update_id)
+        ):
+            return CorrelationReplyResult(
+                accepted=False,
+                status=reread.status,
+                reply_text=reread.reply_text,
+                reply_kind="callback",
+                option_index=reread.reply_option_index,
+                duplicate=True,
+                reason="duplicate_callback_already_recorded",
+            )
+
+        current = reread or existing
+        return CorrelationReplyResult(
+            accepted=False,
+            status=current.status,
+            reason=f"cannot_record_callback_in_status_{current.status.value}",
         )
 
     async def consume_reply(
@@ -843,12 +1074,19 @@ class TelegramRepository:
 
         if res:
             reply_text = str(res.get("reply_text") or "")
-            return CorrelationConsumeResult(consumed=True, reply_text=reply_text)
+            return CorrelationConsumeResult(
+                consumed=True,
+                reply_text=reply_text,
+                reply_kind=res.get("reply_kind"),
+                reply_option_index=res.get("reply_option_index"),
+            )
 
         existing = await self.get_correlation(safe_key)
         if existing:
             return CorrelationConsumeResult(
                 consumed=False,
+                reply_kind=existing.reply_kind,
+                reply_option_index=existing.reply_option_index,
                 reason=f"status_is_{existing.status.value}",
             )
         return CorrelationConsumeResult(consumed=False, reason="correlation_not_found")
