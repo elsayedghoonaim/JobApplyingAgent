@@ -17,6 +17,7 @@ from jobapply.models.telegram import (
     OutboxStatus,
 )
 from jobapply.nodes.execution import (
+    EASY_APPLY_SELECTOR,
     STANDARD_TEXT_FIELD_SELECTOR,
     UserSkippedJob,
     ask_user_for_question,
@@ -651,6 +652,11 @@ def test_linkedin_signin_url_detection():
     assert not linkedin_url_is_signed_in("https://www.linkedin.com/login")
     assert not linkedin_url_is_signed_in("https://www.linkedin.com/checkpoint/challenge")
     assert not linkedin_url_is_signed_in("https://example.com/feed/")
+
+
+def test_easy_apply_selector_supports_current_linkedin_apply_links():
+    assert "a[aria-label*='LinkedIn Apply' i]" in EASY_APPLY_SELECTOR
+    assert "a[href*='openSDUIApplyFlow=true']" in EASY_APPLY_SELECTOR
 
 
 @pytest.mark.asyncio

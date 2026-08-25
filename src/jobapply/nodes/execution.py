@@ -102,6 +102,13 @@ get_llm = _default_get_llm
 select_radio_option = _ext_select_radio_option
 inspect_page_account_safety = _default_inspect_page_account_safety
 
+EASY_APPLY_SELECTOR = (
+    "button:has-text('Easy Apply'), "
+    "button.jobs-apply-button, "
+    "a[aria-label*='LinkedIn Apply' i], "
+    "a[href*='openSDUIApplyFlow=true']"
+)
+
 
 # Compatibility wrappers routing through module-level symbols for test mocking
 async def select_live_radio_option(
@@ -448,9 +455,7 @@ async def execution_node(state: JobApplyState) -> dict:
 
                 # Check for Easy Apply button
                 try:
-                    await page.wait_for_selector(
-                        "button:has-text('Easy Apply'), button.jobs-apply-button", timeout=5000
-                    )
+                    await page.wait_for_selector(EASY_APPLY_SELECTOR, timeout=5000)
                 except Exception:
                     applied_evidence = await find_already_applied_indicator(page)
                     if applied_evidence:
@@ -524,7 +529,7 @@ async def execution_node(state: JobApplyState) -> dict:
                     node="execution_node",
                 )
                 await (
-                    page.locator("button:has-text('Easy Apply'), button.jobs-apply-button")
+                    page.locator(EASY_APPLY_SELECTOR)
                     .filter(visible=True)
                     .first.click()
                 )
