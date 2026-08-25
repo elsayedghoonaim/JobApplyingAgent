@@ -54,6 +54,8 @@ from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
     find_disallowed_required_languages,
     get_job_exclusion_reason,
+    get_title_exclusion_reason,
+    is_machine_learning_position_title,
     is_senior_position_title,
 )
 from jobapply.utils.json_output import extract_json_object
@@ -173,6 +175,36 @@ def test_non_senior_titles_are_not_excluded_by_title_words():
 @pytest.mark.parametrize(
     "title",
     [
+        "Machine Learning Engineer",
+        "Junior ML Engineer",
+        "AI/ML Engineer",
+        "MLOps Engineer",
+        "Deep Learning Engineer",
+    ],
+)
+def test_machine_learning_titles_are_in_scope(title):
+    assert is_machine_learning_position_title(title)
+    assert get_title_exclusion_reason(title) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Data Engineer",
+        "Software Engineer",
+        "AI Engineer",
+        "Computer Vision Engineer",
+        "Data Scientist",
+    ],
+)
+def test_non_machine_learning_titles_are_excluded(title):
+    assert not is_machine_learning_position_title(title)
+    assert get_title_exclusion_reason(title).startswith("Non-machine-learning")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
         "Mid-Senior AI Engineer",
         "Mid -Senior AI Engineer",
         "Mid / Senior AI Engineer",
@@ -183,7 +215,6 @@ def test_non_senior_titles_are_not_excluded_by_title_words():
 )
 def test_mixed_mid_senior_titles_are_included(title):
     assert not is_senior_position_title(title)
-    assert get_job_exclusion_reason({"title": title}) is None
 
 
 def test_only_mandatory_non_arabic_english_languages_are_excluded():

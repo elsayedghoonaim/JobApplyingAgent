@@ -16,7 +16,7 @@ from jobapply.utils.account_safety import (
 from jobapply.utils.browser import get_randomized_delay, managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
-    is_senior_position_title,
+    get_title_exclusion_reason,
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
@@ -563,11 +563,12 @@ async def search_node(state: JobApplyState) -> dict:
                             # Fallback: try to get from inner text
                             title = (await link_elem.inner_text()).strip()
 
-                        if is_senior_position_title(title):
+                        title_exclusion_reason = get_title_exclusion_reason(title)
+                        if title_exclusion_reason:
                             log_event(
                                 "debug",
-                                "search.senior_position_excluded",
-                                f"Skipping senior-level position {job_id}",
+                                "search.title_excluded",
+                                f"Skipping excluded title {job_id}",
                                 run_id=str(state.get("run_id") or "") or None,
                                 job_id=job_id,
                                 node="search_node",
@@ -587,7 +588,7 @@ async def search_node(state: JobApplyState) -> dict:
                                     if location_elem
                                     else "Unknown",
                                     "status": "not_qualified",
-                                    "reason": f"Senior-level position excluded: {title}",
+                                    "reason": title_exclusion_reason,
                                 }
                             )
                             continue

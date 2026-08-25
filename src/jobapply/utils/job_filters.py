@@ -12,6 +12,10 @@ _MIXED_MID_SENIOR_PATTERN = re.compile(
     r"(?:(?:[-–—/]|\bto\b)\s*)?(?:senior|sr\.?)\b",
     re.IGNORECASE,
 )
+_MACHINE_LEARNING_TITLE_PATTERN = re.compile(
+    r"\bmachine[\s-]+learning\b|\bml(?:ops)?\b|\bdeep[\s-]+learning\b",
+    re.IGNORECASE,
+)
 
 _ALLOWED_LANGUAGE_WORDS = {
     "arabic",
@@ -128,6 +132,20 @@ def is_senior_position_title(title: str | None) -> bool:
     return _SENIOR_TITLE_PATTERN.search(normalized) is not None
 
 
+def is_machine_learning_position_title(title: str | None) -> bool:
+    """Return whether a title explicitly identifies a machine-learning role."""
+    return _MACHINE_LEARNING_TITLE_PATTERN.search(title or "") is not None
+
+
+def get_title_exclusion_reason(title: str | None) -> str | None:
+    """Return a deterministic title-only exclusion reason."""
+    if is_senior_position_title(title):
+        return "Senior-level position excluded by user preference"
+    if not is_machine_learning_position_title(title):
+        return "Non-machine-learning title excluded by user preference"
+    return None
+
+
 def _declared_language_is_allowed(language: str) -> bool:
     """Allow declarations made up only of Arabic, English, and joiner words."""
     remaining = language.casefold()
@@ -175,8 +193,9 @@ def find_disallowed_required_languages(job: dict) -> list[str]:
 
 def get_job_exclusion_reason(job: dict) -> str | None:
     """Return the first deterministic reason a job must not be processed."""
-    if is_senior_position_title(job.get("title")):
-        return "Senior-level position excluded by user preference"
+    title_reason = get_title_exclusion_reason(job.get("title"))
+    if title_reason:
+        return title_reason
     disallowed_languages = find_disallowed_required_languages(job)
     if disallowed_languages:
         return "Job requires language(s) outside Arabic and English: " + ", ".join(

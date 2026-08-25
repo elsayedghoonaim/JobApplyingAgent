@@ -9,7 +9,7 @@ from jobapply.state import JobApplyState
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
     find_disallowed_required_languages,
-    is_senior_position_title,
+    get_title_exclusion_reason,
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
@@ -42,11 +42,11 @@ async def qualification_node(state: JobApplyState) -> dict:
             }
         }
 
-    if is_senior_position_title(current_job.get("title")):
-        exclusion_reason = "Senior-level position excluded by user preference"
+    exclusion_reason = get_title_exclusion_reason(current_job.get("title"))
+    if exclusion_reason:
         log_event(
             "info",
-            "qualification.senior_excluded",
+            "qualification.title_excluded",
             f"⛔ EXCLUDED - {exclusion_reason} | {current_job.get('title')}",
             run_id=str(state.get("run_id") or "") or None,
             job_id=current_job.get("job_id"),

@@ -174,7 +174,7 @@ async def test_search_completeness_inspects_all_cards_regardless_of_application_
     # 6 cards on page, while max_applications=1
     card_ids = [f"job_{i}" for i in range(1, 7)]
     cards_data = [
-        {"job_id": jid, "title": f"Developer {jid}", "company": f"Company {jid}"}
+        {"job_id": jid, "title": f"ML Engineer {jid}", "company": f"Company {jid}"}
         for jid in card_ids
     ]
     page = _create_mock_page(cards_data)
@@ -230,7 +230,8 @@ async def test_search_inspects_more_than_25_cards_on_page(
 
     card_ids = [f"job_{i}" for i in range(32)]
     cards_data = [
-        {"job_id": jid, "title": f"Engineer {jid}", "company": f"Corp {jid}"} for jid in card_ids
+        {"job_id": jid, "title": f"ML Engineer {jid}", "company": f"Corp {jid}"}
+        for jid in card_ids
     ]
     page = _create_mock_page(cards_data)
     context = AsyncMock()
@@ -332,10 +333,10 @@ async def test_duplicate_cards_and_current_page_ids_handled_deterministically(
     }
 
     cards_data = [
-        {"job_id": "dup_1", "title": "Developer A", "company": "Acme"},
-        {"job_id": "dup_1", "title": "Developer A", "company": "Acme"},
-        {"job_id": "dup_2", "title": "Developer B", "company": "Beta"},
-        {"job_id": "dup_2", "title": "Developer B", "company": "Beta"},
+        {"job_id": "dup_1", "title": "ML Engineer A", "company": "Acme"},
+        {"job_id": "dup_1", "title": "ML Engineer A", "company": "Acme"},
+        {"job_id": "dup_2", "title": "ML Engineer B", "company": "Beta"},
+        {"job_id": "dup_2", "title": "ML Engineer B", "company": "Beta"},
     ]
     page = _create_mock_page(cards_data)
     context = AsyncMock()
@@ -380,9 +381,9 @@ async def test_deterministic_exclusions_persisted_and_transient_failures_not_per
     cards_data = [
         {"job_id": "already_applied_1", "title": "Dev 1", "applied": "Applied 2 days ago"},
         {"job_id": "senior_1", "title": "Senior Staff Architect", "company": "BigCo"},
-        {"job_id": "lang_1", "title": "Dev 2", "company": "EuroCorp"},
+        {"job_id": "lang_1", "title": "ML Engineer 2", "company": "EuroCorp"},
         {"job_id": "dom_fail_1", "title": "Dev 3", "dom_fail": True},
-        {"job_id": "valid_1", "title": "Software Developer", "company": "GoodCorp"},
+        {"job_id": "valid_1", "title": "Machine Learning Engineer", "company": "GoodCorp"},
     ]
     page = _create_mock_page(cards_data)
     context = AsyncMock()
