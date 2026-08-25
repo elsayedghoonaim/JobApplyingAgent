@@ -13,7 +13,10 @@ Examples:
 import argparse
 import asyncio
 
-from gemma_rate_limit_test import main
+try:
+    from gemma_rate_limit_test import main
+except ModuleNotFoundError:
+    from scripts.gemma_rate_limit_test import main
 
 
 def positive_int(value: str) -> int:

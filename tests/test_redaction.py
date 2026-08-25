@@ -132,3 +132,29 @@ def test_redaction_idempotency():
 def test_redaction_preserves_harmless_text():
     normal_text = "Experienced Senior Python Engineer with 5 years experience at Acme Corp. Applied at https://www.linkedin.com/jobs/view/987654321"
     assert redact_string(normal_text) == normal_text
+
+
+def test_redact_data_covers_suffix_and_prefixed_sensitive_keys():
+    payload = {
+        "db_password": "super_secret_db_pass",
+        "custom_service_api_key": "custom_api_key_12345",
+        "nested": {
+            "internal_client_secret": "my_client_secret",
+            "safe_description": "Standard software engineer",
+        },
+    }
+    redacted = redact_data(payload)
+    assert redacted["db_password"] == "[REDACTED]"
+    assert redacted["custom_service_api_key"] == "[REDACTED]"
+    assert redacted["nested"]["internal_client_secret"] == "[REDACTED]"
+    assert redacted["nested"]["safe_description"] == "Standard software engineer"
+
+
+def test_redact_string_dynamic_env_literals(monkeypatch):
+    monkeypatch.setenv("JOBAPPLY_CUSTOM_SECRET", "UltraTopSecretToken987")
+    monkeypatch.setenv("DATABASE_PASSWORD", "ComplexPass998811!")
+    text = "Connecting with UltraTopSecretToken987 and password ComplexPass998811!"
+    redacted = redact_string(text)
+    assert "UltraTopSecretToken987" not in redacted
+    assert "ComplexPass998811!" not in redacted
+    assert "[REDACTED]" in redacted

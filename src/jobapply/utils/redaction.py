@@ -86,21 +86,21 @@ def _get_dynamic_secret_literals() -> list[str]:
         "JOBAPPLY_LANGSMITH_API_KEY",
         "JOBAPPLY_MONGODB_URL",
     ]
-    for key in env_keys:
-        val = os.getenv(key)
-        if val and isinstance(val, str) and len(val.strip()) >= 6:
-            val_clean = val.strip()
-            if "://" in val_clean and "@" in val_clean:
-                try:
-                    after_scheme = val_clean.split("://", 1)[1]
-                    userinfo = after_scheme.split("@", 1)[0]
-                    if ":" in userinfo:
-                        password = userinfo.split(":", 1)[1]
-                        if len(password) >= 4:
-                            secrets.add(password)
-                except Exception:
-                    pass
-            secrets.add(val_clean)
+    for key, val in os.environ.items():
+        if is_sensitive_key(key) or key in env_keys:
+            if val and isinstance(val, str) and len(val.strip()) >= 6:
+                val_clean = val.strip()
+                if "://" in val_clean and "@" in val_clean:
+                    try:
+                        after_scheme = val_clean.split("://", 1)[1]
+                        userinfo = after_scheme.split("@", 1)[0]
+                        if ":" in userinfo:
+                            password = userinfo.split(":", 1)[1]
+                            if len(password) >= 4:
+                                secrets.add(password)
+                    except Exception:
+                        pass
+                secrets.add(val_clean)
 
     return sorted(secrets, key=len, reverse=True)
 
@@ -201,8 +201,8 @@ def redact_string(text: str, extra_secrets: Optional[Sequence[str]] = None) -> s
 def redact_data(data: Any, extra_secrets: Optional[Sequence[str]] = None) -> Any:
     """Recursively scrub sensitive keys and secret values from arbitrary data structures.
 
-    If a mapping key is in _EXACT_SENSITIVE_KEYS, the entire value (scalar, dict, list,
-    tuple, set) is replaced with [REDACTED].
+    If a mapping key is in _EXACT_SENSITIVE_KEYS or matches sensitive key suffixes,
+    the entire value (scalar, dict, list, tuple, set) is replaced with [REDACTED].
 
     Args:
         data: Arbitrary object (metadata dict, list, error message, etc.).
@@ -220,8 +220,7 @@ def redact_data(data: Any, extra_secrets: Optional[Sequence[str]] = None) -> Any
     if isinstance(data, Mapping):
         redacted_dict = {}
         for key, value in data.items():
-            key_norm = str(key).strip().lower().replace("-", "_")
-            if key_norm in _EXACT_SENSITIVE_KEYS:
+            if is_sensitive_key(str(key)):
                 redacted_dict[key] = _REDACTED_REPLACEMENT
             else:
                 redacted_dict[key] = redact_data(value, extra_secrets)

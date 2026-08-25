@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -82,7 +83,7 @@ async def run(send_telegram: bool) -> None:
     assert generated.get("cover_letter_path")
     print("Cover-letter generation node: OK")
 
-    pdf_path = Path("C:/tmp/jobapply_component_check.pdf")
+    pdf_path = Path(tempfile.gettempdir()) / "jobapply_component_check.pdf"
     await markdown_to_pdf("# Test Resume\n\n## Skills\n\n- Python", str(pdf_path))
     assert pdf_path.exists() and pdf_path.stat().st_size > 1000
     print("PDF generation: OK")
