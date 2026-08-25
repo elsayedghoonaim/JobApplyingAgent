@@ -673,7 +673,9 @@ async def test_live_preflight_only_never_runs_workflow(
 @patch("jobapply.live.TelegramClient")
 @patch("jobapply.live.run", new_callable=AsyncMock)
 @patch("jobapply.live.run_preflight", new_callable=AsyncMock)
+@patch("builtins.input", return_value="LIVE")
 async def test_live_runner_forces_real_submission_mode(
+    mock_input,
     mock_preflight,
     mock_run,
     mock_telegram_class,
@@ -689,6 +691,28 @@ async def test_live_runner_forces_real_submission_mode(
         max_applications=2,
     )
     telegram.send_message.assert_awaited_once()
+    mock_input.assert_called_once()
+    mock_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("jobapply.live.DeduplicationStore.close", new_callable=AsyncMock)
+@patch("jobapply.live.TelegramClient")
+@patch("jobapply.live.run", new_callable=AsyncMock)
+@patch("jobapply.live.run_preflight", new_callable=AsyncMock)
+@patch("builtins.input", return_value="cancel")
+async def test_live_runner_requires_exact_submission_confirmation(
+    mock_input,
+    mock_preflight,
+    mock_run,
+    mock_telegram_class,
+    mock_close,
+):
+    await run_live(max_jobs=4, max_applications=2)
+    mock_preflight.assert_awaited_once()
+    mock_input.assert_called_once()
+    mock_run.assert_not_awaited()
+    mock_telegram_class.assert_not_called()
     mock_close.assert_awaited_once()
 
 
