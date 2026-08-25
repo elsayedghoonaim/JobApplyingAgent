@@ -12,8 +12,8 @@
 | 7. Execution decomposition and fixture tests | Reviewed + committed | `eb7320c` |
 | 8. LLM/database/browser performance | Reviewed + committed | `f158ff9` |
 | 9. Structured observability and summaries | Reviewed + committed | `ea2f1c9` |
-| 10. Doctor CLI and operator enhancements | Reviewed + ready to commit | — |
-| 11. Final coherence sweep | Queued | — |
+| 10. Doctor CLI and operator enhancements | Reviewed + committed | `0a7e666` |
+| 11. Final coherence sweep | Reviewed + committed | `54d7ac6` |
 
 ## Review Notes
 
@@ -39,6 +39,8 @@
 - Task 9 independent gates: diff and lock checks pass, Ruff format/lint pass across 70 files, Pyright reports 0 issues, 162 focused observability/summary/workflow/safety tests pass, 336 project tests pass with the Windows asyncio self-pipe override, the strict socket-block assertion passes separately, locked production and development dependency syncs succeed, sdist and wheel builds succeed, and no live LLM, MongoDB, browser, Telegram, or LinkedIn verification was performed.
 - Task 10 accepted after reviewer-directed OpenCode correction passes: offline diagnostics are non-mutating and live checks are explicitly opt-in and bounded; search location/recency remain stable across checkpoints with explicit override persistence; repost and dry-run metrics use canonical durable outcome fields; Telegram buttons preserve exact action identity through crash recovery; and every manual-review outcome is durably queued or remains bounded, visible, and reconstructable through authoritative outcomes.
 - Task 10 independent gates: diff and lock checks pass, Ruff format/lint pass across 81 files, Pyright reports 0 issues, 272 focused operator/diagnostic/recovery tests pass, 498 project tests pass with one strict-socket test deselected, the strict socket-block assertion passes separately, locked development dependency sync succeeds, sdist and wheel builds succeed, the production-source secret scan is clean, and no live external verification was performed.
+- Task 11 accepted after the final OpenCode coherence sweep: credential redaction now covers bounded suffix-style and prefixed environment keys without broad substring matching, Windows setup guidance uses the locked `uv` workflow, component-check temporary paths are platform-safe, and the stress-test entry point works both as a script and module.
+- Task 11 independent gates: diff and lock checks pass, Ruff format/lint pass across 81 files, Pyright reports 0 issues, 59 focused redaction/print tests pass, 500 project tests pass with the strict socket assertion run separately, configured branch coverage reports 72% with no repository minimum, locked development sync and sdist/wheel builds succeed, package contents contain no private/runtime artifacts, clean Python 3.11 wheel installation and all CLI help smoke tests pass, and tracked-content, secret, unsafe-path, and interface scans are clean. No live application service, browser, Telegram, MongoDB, Gemma, or LinkedIn operation was performed.
 
 ## Needs Your Eyes
 
@@ -46,6 +48,6 @@
 
 ## End-of-Run Checklist
 
-- Run all format, lint, type, test, coverage, build, and wheel-install gates.
-- Scan for secrets, unsafe paths, normal-profile Edge access, in-place state mutation, and dangling interfaces.
-- Confirm every task is reviewed and committed separately.
+- [x] Run all format, lint, type, test, coverage, build, and wheel-install gates.
+- [x] Scan for secrets, unsafe paths, normal-profile Edge access, in-place state mutation, and dangling interfaces.
+- [x] Confirm every task is reviewed and committed separately.
