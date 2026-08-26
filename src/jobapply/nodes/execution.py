@@ -109,6 +109,40 @@ EASY_APPLY_SELECTOR = (
     "a[href*='openSDUIApplyFlow=true']"
 )
 FIRST_FORM_MODAL_TIMEOUT_MS = 15_000
+SAVED_RESUME_SELECTOR = (
+    ".jobs-document-upload-redesign-card__container--selected, "
+    ".jobs-document-upload-redesign-card__container[aria-label='Selected' i]"
+)
+
+
+async def saved_resume_is_selected(modal: Any) -> bool:
+    """Return whether LinkedIn already has a visible saved resume selected."""
+    try:
+        candidates = await modal.query_selector_all(SAVED_RESUME_SELECTOR)
+    except Exception:
+        return False
+    for candidate in candidates:
+        try:
+            if await candidate.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def upload_resume_if_needed(modal: Any, resume_path: str | None) -> str:
+    """Reuse LinkedIn's selected resume, uploading only when no saved resume is selected."""
+    file_inputs = await modal.query_selector_all("input[type='file']")
+    if not file_inputs:
+        return "not_requested"
+    if await saved_resume_is_selected(modal):
+        return "saved_resume"
+    if not resume_path or not os.path.exists(resume_path):
+        return "missing"
+    for file_input in file_inputs:
+        await file_input.set_input_files(resume_path)
+        await asyncio.sleep(1)
+    return "uploaded"
 
 
 # Compatibility wrappers routing through module-level symbols for test mocking
@@ -1492,21 +1526,26 @@ async def execution_node(state: JobApplyState) -> dict:
                                         {"choice_field": cb_label},
                                     )
 
-                    # 4. Handle Resume/File upload
-                    file_inputs = await modal.query_selector_all("input[type='file']")
-                    resume_path = state.get("resume_path")
-                    for file_input in file_inputs:
-                        if resume_path and os.path.exists(resume_path):
-                            log_event(
-                                "debug",
-                                "execution.resume_upload",
-                                "[LIVE] Uploading resume file.",
-                                run_id=run_id,
-                                job_id=job_id or None,
-                                node="execution_node",
-                            )
-                            await file_input.set_input_files(resume_path)
-                            await asyncio.sleep(1)
+                    # 4. Reuse LinkedIn's selected resume; upload only as a fallback.
+                    resume_status = await upload_resume_if_needed(modal, state.get("resume_path"))
+                    if resume_status == "saved_resume":
+                        log_event(
+                            "debug",
+                            "execution.resume_reused",
+                            "[LIVE] Reusing the resume already selected in LinkedIn.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                        )
+                    elif resume_status == "uploaded":
+                        log_event(
+                            "debug",
+                            "execution.resume_upload",
+                            "[LIVE] Uploaded resume because no saved resume was selected.",
+                            run_id=run_id,
+                            job_id=job_id or None,
+                            node="execution_node",
+                        )
 
                     # 5. Advance to the next step or submit.
                     next_btn, navigation_action, btn_text = await find_navigation_button(modal)

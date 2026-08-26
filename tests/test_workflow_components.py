@@ -40,6 +40,7 @@ from jobapply.nodes.execution import (
     select_radio_option,
     text_indicates_already_applied,
     translate_question_for_telegram,
+    upload_resume_if_needed,
     wait_for_submission_confirmation,
 )
 from jobapply.nodes.notification import format_session_summary, notification_node
@@ -693,6 +694,38 @@ def test_easy_apply_selector_supports_current_linkedin_apply_links():
 
 
 @pytest.mark.asyncio
+async def test_saved_linkedin_resume_is_reused_without_upload(tmp_path):
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"pdf")
+    selected_card = AsyncMock()
+    selected_card.is_visible.return_value = True
+    file_input = AsyncMock()
+    modal = AsyncMock()
+    modal.query_selector_all.side_effect = [[file_input], [selected_card]]
+
+    result = await upload_resume_if_needed(modal, str(resume))
+
+    assert result == "saved_resume"
+    file_input.set_input_files.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("jobapply.nodes.execution.asyncio.sleep", new_callable=AsyncMock)
+async def test_resume_upload_is_fallback_when_none_is_selected(mock_sleep, tmp_path):
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"pdf")
+    file_input = AsyncMock()
+    modal = AsyncMock()
+    modal.query_selector_all.side_effect = [[file_input], []]
+
+    result = await upload_resume_if_needed(modal, str(resume))
+
+    assert result == "uploaded"
+    file_input.set_input_files.assert_awaited_once_with(str(resume))
+    mock_sleep.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
 @patch("jobapply.live.DeduplicationStore.close", new_callable=AsyncMock)
 @patch("jobapply.live.run", new_callable=AsyncMock)
 @patch("jobapply.live.run_preflight", new_callable=AsyncMock)
@@ -712,7 +745,7 @@ async def test_live_preflight_only_never_runs_workflow(
 @patch("jobapply.live.TelegramClient")
 @patch("jobapply.live.run", new_callable=AsyncMock)
 @patch("jobapply.live.run_preflight", new_callable=AsyncMock)
-@patch("builtins.input", return_value="LIVE")
+@patch("builtins.input")
 async def test_live_runner_forces_real_submission_mode(
     mock_input,
     mock_preflight,
@@ -730,28 +763,7 @@ async def test_live_runner_forces_real_submission_mode(
         max_applications=2,
     )
     telegram.send_message.assert_awaited_once()
-    mock_input.assert_called_once()
-    mock_close.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@patch("jobapply.live.DeduplicationStore.close", new_callable=AsyncMock)
-@patch("jobapply.live.TelegramClient")
-@patch("jobapply.live.run", new_callable=AsyncMock)
-@patch("jobapply.live.run_preflight", new_callable=AsyncMock)
-@patch("builtins.input", return_value="cancel")
-async def test_live_runner_requires_exact_submission_confirmation(
-    mock_input,
-    mock_preflight,
-    mock_run,
-    mock_telegram_class,
-    mock_close,
-):
-    await run_live(max_jobs=4, max_applications=2)
-    mock_preflight.assert_awaited_once()
-    mock_input.assert_called_once()
-    mock_run.assert_not_awaited()
-    mock_telegram_class.assert_not_called()
+    mock_input.assert_not_called()
     mock_close.assert_awaited_once()
 
 

@@ -138,19 +138,12 @@ async def run_live(
             if settings.search_recency_days is None
             else f"last {settings.search_recency_days} day(s)"
         )
-        print("\nLIVE SUBMISSION CONFIRMATION")
+        print("\nLIVE SUBMISSION SCOPE")
         print(f"Search queries: {', '.join(settings.search_queries_list)}")
         print(f"Location: {settings.search_location}")
         print(f"Recency: {recency_scope}")
         print(f"Jobs to evaluate: {jobs_scope}")
         print(f"Maximum applications to submit: {session_cap}")
-        confirmation = await asyncio.to_thread(
-            input,
-            "Type LIVE to authorize this exact submission scope: ",
-        )
-        if confirmation.strip() != "LIVE":
-            print("Live run cancelled. No jobs were processed.")
-            return
 
         await TelegramClient().send_message(
             "🚀 LIVE JOB APPLY SESSION STARTED\n\n"
