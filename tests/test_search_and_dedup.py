@@ -230,8 +230,7 @@ async def test_search_inspects_more_than_25_cards_on_page(
 
     card_ids = [f"job_{i}" for i in range(32)]
     cards_data = [
-        {"job_id": jid, "title": f"ML Engineer {jid}", "company": f"Corp {jid}"}
-        for jid in card_ids
+        {"job_id": jid, "title": f"ML Engineer {jid}", "company": f"Corp {jid}"} for jid in card_ids
     ]
     page = _create_mock_page(cards_data)
     context = AsyncMock()

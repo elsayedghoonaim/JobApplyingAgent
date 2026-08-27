@@ -36,6 +36,20 @@ def test_absolute_data_dir_resolves_as_is(monkeypatch, tmp_path):
     get_settings.cache_clear()
 
 
+def test_personalization_lists_load_from_environment(monkeypatch):
+    monkeypatch.setenv("JOBAPPLY_SEARCH_QUERIES", "Data Analyst, BI Analyst")
+    monkeypatch.setenv("JOBAPPLY_TARGET_TITLE_KEYWORDS", "Data Analyst,BI Analyst")
+    monkeypatch.setenv("JOBAPPLY_ALLOWED_LANGUAGES", "English, German")
+    monkeypatch.setenv("JOBAPPLY_EXCLUDE_SENIOR_TITLES", "false")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.search_queries_list == ["Data Analyst", "BI Analyst"]
+    assert settings.target_title_keywords_list == ["Data Analyst", "BI Analyst"]
+    assert settings.allowed_languages_list == ["English", "German"]
+    assert settings.exclude_senior_titles is False
+    get_settings.cache_clear()
+
+
 def test_templates_tracked_user_data_ignored():
     """Verify templates directory exists with files and gitignore covers user-data/ and legacy paths."""
     repo_root = Path(__file__).parent.parent

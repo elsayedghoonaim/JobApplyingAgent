@@ -391,6 +391,7 @@ async def search_node(state: JobApplyState) -> dict:
                         "current_job_index": 0,
                         "current_job": None,
                         "search_failed": False,
+                        "query_exhausted": True,
                         "seen_job_ids": set(state.get("seen_job_ids") or set()),
                         "logs": list(state.get("logs") or [])
                         + [f"No results for query '{query}' page {page_num}"],
@@ -563,7 +564,11 @@ async def search_node(state: JobApplyState) -> dict:
                             # Fallback: try to get from inner text
                             title = (await link_elem.inner_text()).strip()
 
-                        title_exclusion_reason = get_title_exclusion_reason(title)
+                        title_exclusion_reason = get_title_exclusion_reason(
+                            title,
+                            settings.target_title_keywords_list,
+                            exclude_senior_titles=settings.exclude_senior_titles,
+                        )
                         if title_exclusion_reason:
                             log_event(
                                 "debug",
@@ -720,6 +725,7 @@ async def search_node(state: JobApplyState) -> dict:
             "current_job_index": 0,
             "current_job": None,
             "search_failed": False,
+            "query_exhausted": False,
             "seen_job_ids": updated_seen_ids,
             "logs": list(state.get("logs") or [])
             + [f"Fetched {len(job_listings)} jobs for '{query}' page {page_num}"],

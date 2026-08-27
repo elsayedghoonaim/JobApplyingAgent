@@ -282,6 +282,7 @@ async def run(
             "current_job_index": 0,
             "current_job": None,
             "search_failed": False,
+            "query_exhausted": False,
             "seen_job_ids": set(),
             "qualification_result": None,
             "edits_urgent": False,
@@ -315,9 +316,17 @@ async def run(
             "max_applications": (
                 max_applications
                 if max_applications is not None
-                else settings.max_applications_per_session
+                else settings.effective_max_applications
             ),
-            "daily_application_cap": settings.daily_application_cap,
+            "daily_application_cap": (
+                settings.daily_application_cap
+                if settings.daily_application_cap is not None
+                else (
+                    max_applications
+                    if max_applications is not None
+                    else settings.effective_max_applications
+                )
+            ),
             "max_jobs_to_evaluate": max_jobs,  # New: limit total jobs to evaluate
             "jobs_evaluated_count": 0,  # New: track how many jobs evaluated
             "qualified_jobs_count": 0,

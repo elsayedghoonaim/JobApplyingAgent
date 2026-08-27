@@ -59,6 +59,7 @@ from jobapply.utils.job_filters import (
     get_title_exclusion_reason,
     is_machine_learning_position_title,
     is_senior_position_title,
+    is_target_position_title,
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.limits import caps_reached
@@ -201,7 +202,27 @@ def test_machine_learning_titles_are_in_scope(title):
 )
 def test_non_machine_learning_titles_are_excluded(title):
     assert not is_machine_learning_position_title(title)
-    assert get_title_exclusion_reason(title).startswith("Non-machine-learning")
+    assert get_title_exclusion_reason(title).startswith("Title does not match")
+
+
+def test_custom_target_title_keywords_are_literal_and_case_insensitive():
+    targets = ["Data Analyst", "BI Analyst", "C++ Developer"]
+    assert is_target_position_title("Junior DATA ANALYST", targets)
+    assert is_target_position_title("BI-Analyst", targets)
+    assert is_target_position_title("C++ Developer", targets)
+    assert not is_target_position_title("Data Engineer", targets)
+    assert not is_target_position_title("Mobile Developer", ["BI"])
+
+
+def test_senior_title_filter_can_be_disabled_per_user():
+    assert (
+        get_title_exclusion_reason(
+            "Senior Data Analyst",
+            ["Data Analyst"],
+            exclude_senior_titles=False,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -237,6 +258,15 @@ def test_only_mandatory_non_arabic_english_languages_are_excluded():
         )
         == []
     )
+
+
+def test_required_language_allowlist_is_customizable():
+    job = {
+        "required_languages": ["English", "German"],
+        "description": "You must be fluent in English and German.",
+    }
+    assert find_disallowed_required_languages(job, ["English", "German"]) == []
+    assert find_disallowed_required_languages(job, ["English"]) == ["German"]
     assert find_disallowed_required_languages(
         {
             "required_languages": ["English", "German"],

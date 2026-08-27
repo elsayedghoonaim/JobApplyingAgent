@@ -130,7 +130,7 @@ async def run_live(
         session_cap = (
             max_applications
             if max_applications is not None
-            else settings.max_applications_per_session
+            else settings.effective_max_applications
         )
         jobs_scope = "configured limit" if max_jobs is None else str(max_jobs)
         recency_scope = (

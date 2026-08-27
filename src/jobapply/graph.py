@@ -50,15 +50,18 @@ def route_select_next_job(state: JobApplyState) -> str:
         return "qualification_node"
 
     # 2. No job selected; current listings are exhausted - need more pages?
-    # Check if we should fetch next page (either max_jobs override or pages_per_query)
+    # Check if we should fetch next page (if not query_exhausted and within limit)
+    query_exhausted = state.get("query_exhausted", False)
+    max_pages = state.get("pages_per_query", 100)
     should_fetch_next_page = False
 
-    if max_jobs is not None:
-        jobs_evaluated = state.get("jobs_evaluated_count", 0)
-        if jobs_evaluated < max_jobs and state["current_page"] < 20:  # Safety limit
+    if not query_exhausted:
+        if max_jobs is not None:
+            jobs_evaluated = state.get("jobs_evaluated_count", 0)
+            if jobs_evaluated < max_jobs and state["current_page"] < max_pages:
+                should_fetch_next_page = True
+        elif state["current_page"] < max_pages:
             should_fetch_next_page = True
-    elif state["current_page"] < state["pages_per_query"]:
-        should_fetch_next_page = True
 
     if should_fetch_next_page:
         return "increment_page_node"
@@ -144,7 +147,7 @@ async def increment_page_node(state: JobApplyState) -> dict:
             details={"target_page": target_page},
         )
 
-    return {"current_page": target_page, "search_failed": False}
+    return {"current_page": target_page, "search_failed": False, "query_exhausted": False}
 
 
 async def increment_query_node(state: JobApplyState) -> dict:
@@ -162,6 +165,7 @@ async def increment_query_node(state: JobApplyState) -> dict:
         "current_query_index": state["current_query_index"] + 1,
         "current_page": 1,
         "search_failed": False,
+        "query_exhausted": False,
     }
 
 

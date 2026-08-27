@@ -350,11 +350,11 @@ async def test_search_node_pauses_before_card_click_and_never_clicks(
     mock_location_elem = AsyncMock()
     mock_location_elem.inner_text = AsyncMock(return_value="Remote")
     mock_link_elem = AsyncMock()
-    mock_link_elem.inner_text = AsyncMock(return_value="Python Developer")
+    mock_link_elem.inner_text = AsyncMock(return_value="ML Engineer")
 
     async def link_get_attribute(attr):
         if attr == "aria-label":
-            return "Python Developer"
+            return "ML Engineer"
         return "/jobs/view/123"
 
     mock_link_elem.get_attribute = link_get_attribute
@@ -380,7 +380,7 @@ async def test_search_node_pauses_before_card_click_and_never_clicks(
         "run_id": "test_run",
         "current_query_index": 0,
         "current_page": 1,
-        "search_queries": ["python developer"],
+        "search_queries": ["ML Engineer"],
         "pages_per_query": 1,
         "seen_job_ids": set(),
         "job_listings": [],

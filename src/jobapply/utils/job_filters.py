@@ -1,6 +1,7 @@
 """Deterministic eligibility filters applied before job qualification."""
 
 import re
+from collections.abc import Sequence
 
 _SENIOR_TITLE_PATTERN = re.compile(
     r"\b(?:senior|sr\.?|lead|principal|staff|manager|director|head|chief|"
@@ -16,6 +17,7 @@ _MACHINE_LEARNING_TITLE_PATTERN = re.compile(
     r"\bmachine[\s-]+learning\b|\bml(?:ops)?\b|\bdeep[\s-]+learning\b",
     re.IGNORECASE,
 )
+_DEFAULT_TARGET_TITLE_KEYWORDS = ("Machine Learning", "ML", "MLOps", "Deep Learning")
 
 _ALLOWED_LANGUAGE_WORDS = {
     "arabic",
@@ -137,19 +139,49 @@ def is_machine_learning_position_title(title: str | None) -> bool:
     return _MACHINE_LEARNING_TITLE_PATTERN.search(title or "") is not None
 
 
-def get_title_exclusion_reason(title: str | None) -> str | None:
+def _normalized_keyword_pattern(keyword: str) -> re.Pattern[str] | None:
+    """Build a literal, word-bounded title phrase pattern with flexible separators."""
+    parts = [part for part in re.split(r"[\s\-]+", keyword.casefold().strip()) if part]
+    if not parts:
+        return None
+    phrase = r"[\s\-/]+".join(re.escape(part) for part in parts)
+    return re.compile(rf"(?<!\w){phrase}(?!\w)", re.IGNORECASE)
+
+
+def is_target_position_title(
+    title: str | None,
+    target_keywords: Sequence[str] | None = None,
+) -> bool:
+    """Return whether a title contains one of the configured literal target phrases."""
+    keywords = target_keywords or _DEFAULT_TARGET_TITLE_KEYWORDS
+    return any(
+        pattern.search(title or "") is not None
+        for keyword in keywords
+        if (pattern := _normalized_keyword_pattern(keyword)) is not None
+    )
+
+
+def get_title_exclusion_reason(
+    title: str | None,
+    target_keywords: Sequence[str] | None = None,
+    *,
+    exclude_senior_titles: bool = True,
+) -> str | None:
     """Return a deterministic title-only exclusion reason."""
-    if is_senior_position_title(title):
+    if exclude_senior_titles and is_senior_position_title(title):
         return "Senior-level position excluded by user preference"
-    if not is_machine_learning_position_title(title):
-        return "Non-machine-learning title excluded by user preference"
+    if not is_target_position_title(title, target_keywords):
+        return "Title does not match configured target keywords"
     return None
 
 
-def _declared_language_is_allowed(language: str) -> bool:
-    """Allow declarations made up only of Arabic, English, and joiner words."""
+def _declared_language_is_allowed(
+    language: str, allowed_languages: Sequence[str] | None = None
+) -> bool:
+    """Allow declarations made up only of configured languages and joiner words."""
+    allowed_words = _normalized_allowed_languages(allowed_languages)
     remaining = language.casefold()
-    for allowed in sorted(_ALLOWED_LANGUAGE_WORDS, key=len, reverse=True):
+    for allowed in sorted(allowed_words, key=len, reverse=True):
         remaining = re.sub(rf"(?<!\w){re.escape(allowed)}(?!\w)", " ", remaining)
     remaining = re.sub(
         r"\b(?:and|or|either|both|language|languages|required|mandatory|native|"
@@ -162,8 +194,21 @@ def _declared_language_is_allowed(language: str) -> bool:
     return not remaining
 
 
-def find_disallowed_required_languages(job: dict) -> list[str]:
-    """Return explicitly required languages other than Arabic and English."""
+def _normalized_allowed_languages(allowed_languages: Sequence[str] | None) -> set[str]:
+    """Normalize configured language names and include known Arabic-script aliases."""
+    allowed_words = {
+        value.casefold().strip() for value in (allowed_languages or ("Arabic", "English")) if value
+    }
+    if "arabic" in allowed_words:
+        allowed_words.update(word for word in _ALLOWED_LANGUAGE_WORDS if word != "english")
+    return allowed_words
+
+
+def find_disallowed_required_languages(
+    job: dict, allowed_languages: Sequence[str] | None = None
+) -> list[str]:
+    """Return explicitly required languages outside the configured allowlist."""
+    allowed_words = _normalized_allowed_languages(allowed_languages)
     disallowed: list[str] = []
     declared_languages = job.get("required_languages") or []
     if isinstance(declared_languages, str):
@@ -172,33 +217,45 @@ def find_disallowed_required_languages(job: dict) -> list[str]:
         value = " ".join(str(language).split()).strip()
         if not value or value.casefold() in {"none", "not specified", "n/a"}:
             continue
-        if not _declared_language_is_allowed(value):
+        if not _declared_language_is_allowed(value, allowed_languages):
             disallowed.append(value)
 
     description = str(job.get("description") or "")
     for pattern in _REQUIRED_LANGUAGE_PATTERNS:
         for match in pattern.finditer(description):
             language = match.group("language").title()
-            if language.casefold() not in _ALLOWED_LANGUAGE_WORDS:
+            if language.casefold() not in allowed_words:
                 disallowed.append(language)
 
     for match in _REQUIRED_LANGUAGE_LIST_PATTERN.finditer(description):
         language_list = next(value for value in match.groupdict().values() if value is not None)
         for language in _LANGUAGE_NAMES:
-            if re.search(rf"(?<!\w){re.escape(language)}(?!\w)", language_list, re.IGNORECASE):
+            if language.casefold() not in allowed_words and re.search(
+                rf"(?<!\w){re.escape(language)}(?!\w)", language_list, re.IGNORECASE
+            ):
                 disallowed.append(language.title())
 
     return list(dict.fromkeys(disallowed))
 
 
-def get_job_exclusion_reason(job: dict) -> str | None:
+def get_job_exclusion_reason(
+    job: dict,
+    target_keywords: Sequence[str] | None = None,
+    *,
+    exclude_senior_titles: bool = True,
+    allowed_languages: Sequence[str] | None = None,
+) -> str | None:
     """Return the first deterministic reason a job must not be processed."""
-    title_reason = get_title_exclusion_reason(job.get("title"))
+    title_reason = get_title_exclusion_reason(
+        job.get("title"),
+        target_keywords,
+        exclude_senior_titles=exclude_senior_titles,
+    )
     if title_reason:
         return title_reason
-    disallowed_languages = find_disallowed_required_languages(job)
+    disallowed_languages = find_disallowed_required_languages(job, allowed_languages)
     if disallowed_languages:
-        return "Job requires language(s) outside Arabic and English: " + ", ".join(
+        return "Job requires language(s) outside configured allowlist: " + ", ".join(
             disallowed_languages
         )
     return None

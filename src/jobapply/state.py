@@ -17,6 +17,7 @@ class JobApplyState(TypedDict):
     current_job_index: int  # pointer into job_listings
     current_job: Optional[dict]  # active job: {job_id, title, company, location, url, description}
     search_failed: bool  # infrastructure failure; stop instead of paginating repeatedly
+    query_exhausted: Optional[bool]  # LinkedIn search returned no results for this query
 
     # ── Deduplication ──
     seen_job_ids: set[str]  # in-memory set (also persisted to MongoDB)

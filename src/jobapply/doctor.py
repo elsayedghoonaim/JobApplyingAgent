@@ -311,11 +311,17 @@ def check_mongodb_url_syntax(settings: Optional[Any]) -> CheckResult:
 
 
 def check_search_configuration(settings: Optional[Any]) -> list[CheckResult]:
-    """Validate location/recency search configuration."""
+    """Validate search scope and per-user eligibility preferences."""
     from jobapply.utils.search_config import normalize_recency_days, normalize_search_location
 
     if settings is None:
-        return [_skipped_result("search-location"), _skipped_result("search-recency")]
+        return [
+            _skipped_result("search-location"),
+            _skipped_result("search-recency"),
+            _skipped_result("search-queries"),
+            _skipped_result("target-title-keywords"),
+            _skipped_result("allowed-languages"),
+        ]
     results: list[CheckResult] = []
 
     location, loc_err = normalize_search_location(settings.search_location)
@@ -339,6 +345,40 @@ def check_search_configuration(settings: Optional[Any]) -> list[CheckResult]:
         results.append(
             CheckResult("search-recency", STATUS_PASS, f"Recency filter: last {recency} day(s).")
         )
+
+    queries = list(settings.search_queries_list)
+    targets = list(settings.target_title_keywords_list)
+    languages = list(settings.allowed_languages_list)
+    results.append(
+        CheckResult(
+            "search-queries",
+            STATUS_PASS if queries else STATUS_FAIL,
+            f"Discovery queries: {', '.join(queries)}"
+            if queries
+            else "No search queries configured.",
+        )
+    )
+    results.append(
+        CheckResult(
+            "target-title-keywords",
+            STATUS_PASS if targets else STATUS_FAIL,
+            (
+                f"Strict title phrases: {', '.join(targets)}; "
+                f"exclude senior titles: {str(settings.exclude_senior_titles).lower()}."
+                if targets
+                else "No target title phrases configured."
+            ),
+        )
+    )
+    results.append(
+        CheckResult(
+            "allowed-languages",
+            STATUS_PASS if languages else STATUS_FAIL,
+            f"Allowed required languages: {', '.join(languages)}"
+            if languages
+            else "No allowed languages configured.",
+        )
+    )
     return results
 
 

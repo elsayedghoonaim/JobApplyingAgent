@@ -288,6 +288,20 @@ def test_search_configuration_check_reflects_settings(tmp_path):
     )
 
 
+def test_search_configuration_reports_personalization(tmp_path):
+    fake = _offline_settings(tmp_path)
+    fake.search_queries = "Data Analyst,BI Analyst"
+    fake.target_title_keywords = "Data Analyst,Business Intelligence Analyst"
+    fake.exclude_senior_titles = False
+    fake.allowed_languages = "English,German"
+    results = check_search_configuration(fake)
+    by_name = {result.name: result for result in results}
+    assert "Data Analyst" in by_name["search-queries"].detail
+    assert "Business Intelligence Analyst" in by_name["target-title-keywords"].detail
+    assert "exclude senior titles: false" in by_name["target-title-keywords"].detail
+    assert "English, German" in by_name["allowed-languages"].detail
+
+
 # ── Central sanitization ──────────────────────────────────────────────────────
 
 

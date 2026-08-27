@@ -563,11 +563,7 @@ async def execution_node(state: JobApplyState) -> dict:
                     job_id=job_id or None,
                     node="execution_node",
                 )
-                await (
-                    page.locator(EASY_APPLY_SELECTOR)
-                    .filter(visible=True)
-                    .first.click()
-                )
+                await page.locator(EASY_APPLY_SELECTOR).filter(visible=True).first.click()
                 await asyncio.sleep(get_randomized_delay())
 
                 # Guard opening Easy Apply

@@ -56,7 +56,7 @@ async def cleanup_mongo_and_cache_state():
 async def test_search_node_makes_zero_llm_calls():
     """Verify production search_node extracts job cards without making any LLM requests."""
     fake_state: JobApplyState = {
-        "search_queries": ["Python Developer"],
+        "search_queries": ["ML Engineer"],
         "current_query_index": 0,
         "current_page": 1,
         "pages_per_query": 1,
@@ -76,9 +76,9 @@ async def test_search_node_makes_zero_llm_calls():
 
     mock_link = AsyncMock()
     mock_link.get_attribute = AsyncMock(
-        side_effect=lambda attr: "Python Developer" if attr == "aria-label" else None
+        side_effect=lambda attr: "ML Engineer" if attr == "aria-label" else None
     )
-    mock_link.inner_text = AsyncMock(return_value="Python Developer")
+    mock_link.inner_text = AsyncMock(return_value="ML Engineer")
     mock_link.click = AsyncMock()
 
     mock_company = AsyncMock()
@@ -88,7 +88,7 @@ async def test_search_node_makes_zero_llm_calls():
     mock_location.inner_text = AsyncMock(return_value="Remote")
 
     mock_desc = AsyncMock()
-    mock_desc.inner_text = AsyncMock(return_value="We are seeking a Python Developer.")
+    mock_desc.inner_text = AsyncMock(return_value="We are seeking an ML Engineer.")
 
     async def mock_query_selector(selector):
         if "a.job-card-container__link" in selector:
@@ -139,9 +139,9 @@ async def test_search_node_makes_zero_llm_calls():
         assert len(result["job_listings"]) == 1
         job = result["job_listings"][0]
         assert job["job_id"] == "123456"
-        assert job["title"] == "Python Developer"
+        assert job["title"] == "ML Engineer"
         assert job["company"] == "TechCorp"
-        assert job["description"] == "We are seeking a Python Developer."
+        assert job["description"] == "We are seeking an ML Engineer."
 
 
 @pytest.mark.asyncio
@@ -154,11 +154,11 @@ async def test_qualification_node_makes_single_combined_llm_call(tmp_path):
 
     current_job = {
         "job_id": "789012",
-        "title": "Backend Engineer",
+        "title": "ML Engineer",
         "company": "Cloud Inc",
         "location": "San Francisco, CA",
         "url": "https://www.linkedin.com/jobs/view/789012",
-        "description": "About the job\nTitle: Backend Engineer\nLooking for Python developer in SF. Remote OK. 6 months.",
+        "description": "About the job\nTitle: ML Engineer\nLooking for Python developer in SF. Remote OK. 6 months.",
     }
 
     fake_state: JobApplyState = {
@@ -241,7 +241,7 @@ async def test_language_filtering_phrase_in_raw_description_triggers_exactly_one
 
     current_job = {
         "job_id": "999888",
-        "title": "Software Engineer",
+        "title": "ML Engineer",
         "company": "Berlin Tech",
         "location": "Berlin, Germany",
         "url": "https://www.linkedin.com/jobs/view/999888",
@@ -332,9 +332,9 @@ async def test_search_node_bounds_long_raw_description():
 
     mock_link = AsyncMock()
     mock_link.get_attribute = AsyncMock(
-        side_effect=lambda attr: "Developer" if attr == "aria-label" else None
+        side_effect=lambda attr: "ML Engineer" if attr == "aria-label" else None
     )
-    mock_link.inner_text = AsyncMock(return_value="Developer")
+    mock_link.inner_text = AsyncMock(return_value="ML Engineer")
     mock_link.click = AsyncMock()
 
     mock_company = AsyncMock()
@@ -390,7 +390,7 @@ async def test_search_node_bounds_long_raw_description():
         mock_mb.return_value = AsyncContextManager()
 
         state: JobApplyState = {
-            "search_queries": ["Dev"],
+            "search_queries": ["ML Engineer"],
             "current_query_index": 0,
             "current_page": 1,
             "pages_per_query": 1,
@@ -419,7 +419,7 @@ async def test_qualification_bounds_oversized_clean_description_and_preserves_im
     original_raw_desc = "Original raw description"
     input_current_job = {
         "job_id": "554433",
-        "title": "Backend Developer",
+        "title": "ML Engineer",
         "company": "FastCo",
         "location": "Remote",
         "url": "https://www.linkedin.com/jobs/view/554433",

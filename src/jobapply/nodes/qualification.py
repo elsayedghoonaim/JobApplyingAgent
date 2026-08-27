@@ -42,7 +42,11 @@ async def qualification_node(state: JobApplyState) -> dict:
             }
         }
 
-    exclusion_reason = get_title_exclusion_reason(current_job.get("title"))
+    exclusion_reason = get_title_exclusion_reason(
+        current_job.get("title"),
+        settings.target_title_keywords_list,
+        exclude_senior_titles=settings.exclude_senior_titles,
+    )
     if exclusion_reason:
         log_event(
             "info",
@@ -150,7 +154,8 @@ async def qualification_node(state: JobApplyState) -> dict:
                 {
                     "description": bounded_raw_description,
                     "required_languages": result.required_languages,
-                }
+                },
+                settings.allowed_languages_list,
             )
 
             if disallowed_languages:

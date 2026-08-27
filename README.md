@@ -25,6 +25,10 @@ uses an existing signed-in Microsoft Edge session.
 
 ## Installation
 
+For a first-time personal setup, follow [CUSTOMIZE.md](CUSTOMIZE.md). It explains
+the candidate files, target titles, location, language preferences, safety
+limits, dry-run verification, and the first live run.
+
 ```powershell
 # Install dependencies with uv
 uv sync --extra dev
@@ -96,6 +100,11 @@ JOBAPPLY_SEARCH_RECENCY_DAYS=
 - Use `--recency-days 0` to explicitly disable filtering for one run.
 - Effective values are stored in run/checkpoint state so resumed runs keep identical search behavior.
 - Reposted listings are flagged non-destructively (`is_repost`, bounded redacted evidence) and never filtered, deprioritized, or counted against quotas.
+
+Search queries discover listings, while `JOBAPPLY_TARGET_TITLE_KEYWORDS` is the
+strict title allowlist. For example, a broad `AI Engineer` search can still be
+used while only titles containing `Machine Learning`, `ML`, `MLOps`, or
+`Deep Learning` are processed. See [CUSTOMIZE.md](CUSTOMIZE.md) for examples.
 
 ## Doctor diagnostics
 

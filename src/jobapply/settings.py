@@ -53,8 +53,9 @@ class Settings(BaseSettings):
     linkedin_signin_timeout_seconds: int = Field(default=600, gt=0)
 
     # Agent behavior
-    max_applications_per_session: int = Field(default=25, ge=0)
-    daily_application_cap: int = Field(default=50, ge=0)
+    max_applications: int = Field(default=50, ge=0)
+    max_applications_per_session: Optional[int] = Field(default=None, ge=0)
+    daily_application_cap: Optional[int] = Field(default=None, ge=0)
     qualification_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     urgent_edit_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
     action_delay_ms: int = Field(default=2000, ge=0)
@@ -66,10 +67,17 @@ class Settings(BaseSettings):
     edge_user_data_dir: str = r"%LOCALAPPDATA%\JobApply\EdgeProfile"
     dry_run: bool = True
     headless: bool = False
-    pages_per_query: int = Field(default=3, ge=1, le=20)
+    pages_per_query: int = Field(default=100, ge=1, le=100)
     approval_timeout_seconds: int = Field(default=300, gt=0)
     form_qa_timeout_seconds: int = Field(default=300, gt=0)
     auto_accept_application_terms: bool = False
+
+    @property
+    def effective_max_applications(self) -> int:
+        """Return configured max applications, preferring session override if set."""
+        if self.max_applications_per_session is not None:
+            return self.max_applications_per_session
+        return self.max_applications
 
     # Persistence
     seen_jobs_collection: str = "seen_jobs"
@@ -96,6 +104,9 @@ class Settings(BaseSettings):
 
     # Search & Card Stability Loader
     search_queries: str = "Machine Learning Engineer,AI Engineer"
+    target_title_keywords: str = "Machine Learning,ML,MLOps,Deep Learning"
+    exclude_senior_titles: bool = True
+    allowed_languages: str = "Arabic,English"
     search_location: str = Field(default="Worldwide", min_length=1, max_length=200)
     # Bounded positive number of days; unset/empty or 0 disables the recency filter.
     search_recency_days: Optional[int] = Field(default=None, ge=0, le=30)
@@ -115,7 +126,25 @@ class Settings(BaseSettings):
     @property
     def search_queries_list(self) -> list[str]:
         """Parse comma-separated search queries into a list."""
-        return [q.strip() for q in self.search_queries.split(",")]
+        return [q.strip() for q in self.search_queries.split(",") if q.strip()]
+
+    @property
+    def target_title_keywords_list(self) -> list[str]:
+        """Parse the title phrases that make a job eligible."""
+        return [value.strip() for value in self.target_title_keywords.split(",") if value.strip()]
+
+    @property
+    def allowed_languages_list(self) -> list[str]:
+        """Parse languages the candidate accepts as job requirements."""
+        return [value.strip() for value in self.allowed_languages.split(",") if value.strip()]
+
+    @field_validator("search_queries", "target_title_keywords", "allowed_languages")
+    @classmethod
+    def _comma_list_must_not_be_empty(cls, value: str) -> str:
+        """Reject empty comma-separated personalization lists."""
+        if not any(part.strip() for part in value.split(",")):
+            raise ValueError("must contain at least one non-empty value")
+        return value
 
 
 @lru_cache
