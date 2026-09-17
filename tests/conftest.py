@@ -1,6 +1,7 @@
 import os
 import socket
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_socket
@@ -59,6 +60,41 @@ def _safe_socketpair(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0):
 
 
 socket.socketpair = _safe_socketpair
+
+
+@pytest.fixture(autouse=True)
+def _isolate_post_submit_ambiguity_tests(request, monkeypatch):
+    """Keep post-submit ambiguity tests focused on the submit boundary itself.
+
+    Those tests use deliberately minimal Playwright mocks. New pre-submit DOM and
+    account-safety inspections are exercised elsewhere, so neutralize them only
+    for these two tests to prevent unrelated mock behavior from short-circuiting
+    before the submit/confirmation paths under test.
+    """
+    target_tests = {
+        "test_execution_node_unconfirmed_timeout_halts_with_pause_and_notification_route",
+        "test_execution_node_submit_click_exception_treated_as_ambiguous_review",
+    }
+    if request.node.name in target_tests:
+        import jobapply.nodes.execution as execution_module
+        from jobapply.execution import RequiredFieldValidationResult
+
+        monkeypatch.setattr(
+            execution_module,
+            "guard_page_account_safety",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            execution_module,
+            "validate_visible_required_controls",
+            AsyncMock(
+                return_value=RequiredFieldValidationResult(
+                    is_valid=True,
+                    unresolved_fields=[],
+                )
+            ),
+        )
+    yield
 
 
 @pytest.fixture(autouse=True)
