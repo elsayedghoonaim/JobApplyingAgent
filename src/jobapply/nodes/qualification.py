@@ -9,6 +9,7 @@ from jobapply.state import JobApplyState
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
     find_disallowed_required_languages,
+    get_location_exclusion_reason,
     get_title_exclusion_reason,
 )
 from jobapply.utils.json_output import extract_json_object
@@ -42,7 +43,11 @@ async def qualification_node(state: JobApplyState) -> dict:
             }
         }
 
-    exclusion_reason = get_title_exclusion_reason(
+    location_exclusion_reason = get_location_exclusion_reason(
+        current_job,
+        settings.excluded_locations_list,
+    )
+    exclusion_reason = location_exclusion_reason or get_title_exclusion_reason(
         current_job.get("title"),
         settings.target_title_keywords_list,
         exclude_senior_titles=settings.exclude_senior_titles,
@@ -50,7 +55,11 @@ async def qualification_node(state: JobApplyState) -> dict:
     if exclusion_reason:
         log_event(
             "info",
-            "qualification.title_excluded",
+            (
+                "qualification.location_excluded"
+                if location_exclusion_reason
+                else "qualification.title_excluded"
+            ),
             f"⛔ EXCLUDED - {exclusion_reason} | {current_job.get('title')}",
             run_id=str(state.get("run_id") or "") or None,
             job_id=current_job.get("job_id"),

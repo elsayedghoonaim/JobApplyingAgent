@@ -1,6 +1,7 @@
 """Approval node - Telegram human-in-the-loop for urgent edits."""
 
 import os
+from html import escape
 from typing import Any
 
 from jobapply.models.telegram import CorrelationStatus, CorrelationWaitResult
@@ -20,6 +21,46 @@ def _data_path(*parts: str) -> str:
     return get_settings().resolve_data_path(*parts)
 
 
+def format_approval_question(state: JobApplyState) -> str:
+    """Build a structured Telegram question for the legacy edit-approval path."""
+    job = state.get("current_job") or {}
+    qualification = state.get("qualification_result") or {}
+    reasoning = " ".join(str(state.get("edit_reasoning") or "No reasoning provided").split())
+    proposed = str(state.get("proposed_edits") or "No changes proposed").strip()
+    if len(reasoning) > 700:
+        reasoning = reasoning[:697].rstrip() + "..."
+    if len(proposed) > 1400:
+        proposed = proposed[:1397].rstrip() + "..."
+
+    lines = [
+        "<b>📝 RESUME DECISION REQUIRED</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>JOB DETAILS</b>",
+        f"• Role: {escape(str(job.get('title') or 'Unknown title'))}",
+        f"• Company: {escape(str(job.get('company') or 'Unknown company'))}",
+        f"• Fit score: {float(qualification.get('score') or 0):.0%}",
+    ]
+    if job.get("url"):
+        lines.extend(["", "<b>JOB LINK</b>", escape(str(job["url"]))])
+    lines.extend(
+        [
+            "",
+            "<b>WHY AN EDIT WAS SUGGESTED</b>",
+            escape(reasoning),
+            "",
+            "<b>PROPOSED CHANGES</b>",
+            escape(proposed),
+            "",
+            "<b>ACTION REQUIRED</b>",
+            "• Approve — use the edited resume.",
+            "• Use Base — continue with the original resume.",
+            "• Skip — skip this job.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 async def approval_node(state: JobApplyState) -> dict:
     """Ask user via Telegram for approval of urgent resume edits."""
     settings = get_settings()
@@ -31,21 +72,7 @@ async def approval_node(state: JobApplyState) -> dict:
     canonical_job_id = canonicalize_job_id(current_job.get("job_id", "unknown")) or "unknown"
     corr_key = f"approval:{run_id}:{canonical_job_id}"
 
-    raw_message = f"""🔴 **Urgent Edit Recommended**
- 
-**Job:** {current_job.get("title", "Unknown")} at {current_job.get("company", "Unknown")}
-**Score:** {qual_result.get("score", 0.0):.2f}
-
-**Why:** {state.get("edit_reasoning", "No reasoning provided")}
-
-**Proposed changes:**
-{state.get("proposed_edits", "No changes proposed")}
-
-Reply followed by:
-✅ **approve** — use edited resume
-📄 **base** — use original resume as-is
-❌ **skip** — skip this job
-"""
+    raw_message = format_approval_question(state)
 
     errors = list(state.get("errors") or [])
     try:

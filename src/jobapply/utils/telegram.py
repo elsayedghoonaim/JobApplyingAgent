@@ -1,6 +1,7 @@
 """Telegram client with checked delivery, durable correlated replies, and outbox recovery."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 import httpx
@@ -29,6 +30,28 @@ from jobapply.utils.telegram_storage import (
 from jobapply.utils.tracing import get_telegram_metadata
 
 MAX_CALLBACK_ANSWER_LENGTH = 200
+CONTROL_COMMANDS = frozenset({"/report", "/run", "/stop", "/status"})
+ControlCommandHandler = Callable[[str], Awaitable[None]]
+_control_command_handler: ControlCommandHandler | None = None
+_priority_poll_waiters = 0
+
+
+def set_control_command_handler(handler: ControlCommandHandler | None) -> None:
+    """Register the in-process Telegram supervisor command handler."""
+    global _control_command_handler
+    _control_command_handler = handler
+
+
+def extract_control_command(message: dict, expected_chat_id: str) -> str | None:
+    """Return one authorized normalized bot command from a Telegram message."""
+    if str(message.get("chat", {}).get("id", "")) != str(expected_chat_id):
+        return None
+    text = str(message.get("text") or "").strip()
+    if not text.startswith("/"):
+        return None
+    token = text.split(maxsplit=1)[0].casefold()
+    command = token.split("@", 1)[0]
+    return command if command in CONTROL_COMMANDS else None
 
 
 def correlated_reply_text(
@@ -177,6 +200,63 @@ class TelegramClient:
             raise TelegramTransportAmbiguousError(
                 f"Telegram sendMessage transport error: {sanitized}"
             ) from None
+
+    async def poll_control_commands_once(
+        self,
+        handler: ControlCommandHandler,
+        *,
+        timeout: int = 2,
+    ) -> int:
+        """Poll and dispatch authorized controller commands under the durable cursor lease."""
+        # Form Q&A is latency-sensitive.  Once a question waiter announces that
+        # it needs the single Telegram getUpdates lease, do not let the
+        # background command poller reacquire and starve it between short polls.
+        if _priority_poll_waiters:
+            return 0
+        lease = await self.telegram_repo.claim_poll_lease(
+            self.bot_chat_key,
+            lease_duration_seconds=max(timeout + 5, self.settings.telegram_poll_lease_seconds),
+        )
+        if not lease:
+            return 0
+        handled = 0
+        token = self.settings.telegram_bot_token
+        try:
+            durable_cursor = await self.telegram_repo.get_cursor(self.bot_chat_key)
+            if durable_cursor is not None:
+                self._last_update_id = max(self._last_update_id or 0, durable_cursor)
+            offset = 0 if self._last_update_id is None else self._last_update_id + 1
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout + 5.0, connect=5.0)) as client:
+                response = await client.post(
+                    f"{self._base_url}/getUpdates",
+                    json={"offset": offset, "timeout": max(0, timeout)},
+                )
+                response.raise_for_status()
+                data = response.json()
+                if not data.get("ok"):
+                    desc = redact_string(
+                        str(data.get("description", "unknown error")),
+                        extra_secrets=[token],
+                    )
+                    raise RuntimeError(f"Telegram getUpdates failed: {desc}")
+                for update in data.get("result", []):
+                    update_id = int(update.get("update_id", 0))
+                    command = extract_control_command(
+                        update.get("message", {}),
+                        self.settings.telegram_chat_id,
+                    )
+                    if command:
+                        await handler(command)
+                        handled += 1
+                    saved = await self.telegram_repo.save_cursor(
+                        self.bot_chat_key, update_id, lease
+                    )
+                    if not saved:
+                        raise RuntimeError("Telegram controller cursor save failed")
+                    self._last_update_id = max(self._last_update_id or 0, update_id)
+            return handled
+        finally:
+            await self.telegram_repo.release_poll_lease(self.bot_chat_key, lease)
 
     async def wait_for_correlated_reply(
         self,
@@ -474,9 +554,19 @@ class TelegramClient:
                 nonce=reg.nonce,
             )
 
-        poll_lease = await self.telegram_repo.claim_poll_lease(
-            self.bot_chat_key, lease_duration_seconds=lease_duration
-        )
+        global _priority_poll_waiters
+        _priority_poll_waiters += 1
+        try:
+            poll_lease = None
+            for _ in range(100):
+                poll_lease = await self.telegram_repo.claim_poll_lease(
+                    self.bot_chat_key, lease_duration_seconds=lease_duration
+                )
+                if poll_lease:
+                    break
+                await asyncio.sleep(0.1)
+        finally:
+            _priority_poll_waiters = max(0, _priority_poll_waiters - 1)
         if not poll_lease:
             await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
             return CorrelationWaitResult(
@@ -512,11 +602,18 @@ class TelegramClient:
                 else None
             )
             try:
+                structured_parse_mode = (
+                    "HTML" if purpose in {"form_qa", "approval"} else None
+                )
                 if reg.inline_actions:
                     buttoned_text = self._bounded_buttoned_prompt(reg.prompt_text, reg.nonce)
-                    sent_id = await self._send_single_message(buttoned_text, None, reply_markup)
+                    sent_id = await self._send_single_message(
+                        buttoned_text, structured_parse_mode, reply_markup
+                    )
                 else:
-                    sent_id = await self.send_message(reg.prompt_text, None, reply_markup)
+                    sent_id = await self.send_message(
+                        reg.prompt_text, structured_parse_mode, reply_markup
+                    )
                 if sent_id is None:
                     raise TelegramTransportAmbiguousError("sendMessage returned None message_id")
             except TelegramApiDefiniteRejectError as reject_err:
@@ -764,6 +861,30 @@ class TelegramClient:
                             prompt_message_id,
                         )
 
+                        command = extract_control_command(
+                            msg,
+                            self.settings.telegram_chat_id,
+                        )
+                        if command and _control_command_handler is not None:
+                            await _control_command_handler(command)
+                            cursor_saved = await self.telegram_repo.save_cursor(
+                                self.bot_chat_key, up_id, poll_lease
+                            )
+                            if not cursor_saved:
+                                await self.telegram_repo.release_poll_lease(
+                                    self.bot_chat_key, poll_lease
+                                )
+                                await self.telegram_repo.release_waiter(
+                                    correlation_key, waiter_lease.lease_id
+                                )
+                                return CorrelationWaitResult(
+                                    status=CorrelationStatus.STORAGE_ERROR,
+                                    error_reason="cursor_save_failed_control_command",
+                                    nonce=reg.nonce,
+                                )
+                            self._last_update_id = max(self._last_update_id or 0, up_id)
+                            continue
+
                         if reply is not None:
                             msg_id = msg.get("message_id", 0)
                             rec_res = await self.telegram_repo.record_reply(
@@ -833,6 +954,10 @@ class TelegramClient:
                                 )
                             self._last_update_id = max(self._last_update_id or 0, up_id)
 
+        except asyncio.CancelledError:
+            await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
+            await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)
+            raise
         except Exception as exc:
             await self.telegram_repo.release_poll_lease(self.bot_chat_key, poll_lease)
             await self.telegram_repo.release_waiter(correlation_key, waiter_lease.lease_id)

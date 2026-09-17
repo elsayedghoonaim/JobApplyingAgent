@@ -37,8 +37,10 @@ class Settings(BaseSettings):
     mongodb_url: str = Field(default="mongodb://localhost:27017")
     mongodb_db: str = "jobapply"
 
-    # Single LLM provider: Gemma through the native Google generateContent API.
-    llm_model: Literal["gemma-4-31b-it"] = "gemma-4-31b-it"
+    # Gemini uses the native generateContent API; OpenRouter uses its
+    # OpenAI-compatible chat completions API.
+    llm_provider: Literal["gemini", "openrouter"] = "gemini"
+    llm_model: str = "gemma-4-31b-it"
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
 
     # Telegram
@@ -47,10 +49,12 @@ class Settings(BaseSettings):
     telegram_bot_name: str = "Magdy"
     telegram_user_title: str = "Boss"
     telegram_question_language: str = "English"
+    report_timezone: str = "Africa/Cairo"
 
     # LinkedIn
     linkedin_base_url: str = "https://www.linkedin.com"
     linkedin_signin_timeout_seconds: int = Field(default=600, gt=0)
+    linkedin_navigation_timeout_ms: int = Field(default=60_000, ge=10_000, le=180_000)
 
     # Agent behavior
     max_applications: int = Field(default=50, ge=0)
@@ -86,6 +90,9 @@ class Settings(BaseSettings):
     telegram_correlations_collection: str = "telegram_correlations"
     telegram_cursors_collection: str = "telegram_cursors"
     notification_outbox_collection: str = "notification_outbox"
+    candidate_facts_collection: str = "candidate_facts"
+    candidate_fact_validity_days: int = Field(default=365, ge=1, le=3650)
+    candidate_fact_history_limit: int = Field(default=20, ge=1, le=100)
     telegram_correlation_ttl_seconds: int = Field(default=604800, ge=3600)
     telegram_poll_lease_seconds: int = Field(default=30, ge=5)
     outbox_max_attempts: int = Field(default=3, ge=1)
@@ -107,6 +114,11 @@ class Settings(BaseSettings):
     target_title_keywords: str = "Machine Learning,ML,MLOps,Deep Learning"
     exclude_senior_titles: bool = True
     allowed_languages: str = "Arabic,English"
+    excluded_locations: str = (
+        "Palestine,Palastin,Palastine,State of Palestine,Palestinian Territory,Palestinian Territories,Israel,Israeli,West Bank,"
+        "Gaza,Gaza Strip,Tel Aviv,Jerusalem,Haifa,Beer Sheva,Beersheba,Ashdod,"
+        "Netanya,Petah Tikva,Rishon LeZion,Ramat Gan,Herzliya,فلسطين,إسرائيل,ישראל"
+    )
     search_location: str = Field(default="Worldwide", min_length=1, max_length=200)
     # Bounded positive number of days; unset/empty or 0 disables the recency filter.
     search_recency_days: Optional[int] = Field(default=None, ge=0, le=30)
@@ -138,7 +150,17 @@ class Settings(BaseSettings):
         """Parse languages the candidate accepts as job requirements."""
         return [value.strip() for value in self.allowed_languages.split(",") if value.strip()]
 
-    @field_validator("search_queries", "target_title_keywords", "allowed_languages")
+    @property
+    def excluded_locations_list(self) -> list[str]:
+        """Parse locations where jobs must never be processed."""
+        return [value.strip() for value in self.excluded_locations.split(",") if value.strip()]
+
+    @field_validator(
+        "search_queries",
+        "target_title_keywords",
+        "allowed_languages",
+        "excluded_locations",
+    )
     @classmethod
     def _comma_list_must_not_be_empty(cls, value: str) -> str:
         """Reject empty comma-separated personalization lists."""

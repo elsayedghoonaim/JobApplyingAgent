@@ -48,7 +48,7 @@ _NORMAL_EDGE_PROFILE_MARKERS = (
 )
 
 REQUIRED_USER_DATA_FILES = ("profile.yaml", "resume.md", "resume.pdf")
-REQUIRED_CREDENTIAL_KEYS = ("GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+REQUIRED_CREDENTIAL_KEYS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
 
 _SETTINGS_UNAVAILABLE_DETAIL = "Skipped: settings could not be loaded."
 
@@ -137,16 +137,26 @@ def _skipped_result(name: str) -> CheckResult:
 
 
 def check_gemma_model_constraint(settings: Optional[Any]) -> CheckResult:
-    """Gemma is the only permitted production LLM."""
+    """Validate the selected LLM provider, model, and endpoint combination."""
     if settings is None:
         return _skipped_result("gemma-model-constraint")
+    provider = getattr(settings, "llm_provider", "gemini")
     model = getattr(settings, "llm_model", "")
-    if model == "gemma-4-31b-it":
-        return CheckResult("gemma-model-constraint", STATUS_PASS, "LLM model is gemma-4-31b-it.")
+    base_url = getattr(settings, "llm_base_url", "")
+    if provider == "gemini" and model == "gemma-4-31b-it":
+        return CheckResult(
+            "gemma-model-constraint", STATUS_PASS, "Gemini model is gemma-4-31b-it."
+        )
+    if provider == "openrouter" and model.strip() and "openrouter.ai" in base_url:
+        return CheckResult(
+            "gemma-model-constraint",
+            STATUS_PASS,
+            f"OpenRouter model is configured ({model[:100]}).",
+        )
     return CheckResult(
         "gemma-model-constraint",
         STATUS_FAIL,
-        "JOBAPPLY_LLM_MODEL must remain gemma-4-31b-it.",
+        "LLM provider, model, and base URL are inconsistent.",
     )
 
 
@@ -280,8 +290,12 @@ def _credential_is_configured(key: str) -> bool:
 
 def check_credentials_configured(settings: Optional[Any] = None) -> CheckResult:
     """Report required credentials only as configured/missing; values are never printed."""
-    del settings  # credential presence is read from the environment directly
-    missing = [key for key in REQUIRED_CREDENTIAL_KEYS if not _credential_is_configured(key)]
+    provider = getattr(settings, "llm_provider", None) or os.getenv(
+        "JOBAPPLY_LLM_PROVIDER", "gemini"
+    )
+    llm_key = "OPENROUTER_API_KEY" if provider == "openrouter" else "GOOGLE_API_KEY"
+    required = (llm_key, *REQUIRED_CREDENTIAL_KEYS)
+    missing = [key for key in required if not _credential_is_configured(key)]
     if not missing:
         return CheckResult("credentials", STATUS_PASS, "All required credentials are configured.")
     return CheckResult(
@@ -464,6 +478,21 @@ async def default_google_models_check(base_url: str, api_key: str) -> tuple[bool
     return False, "Gemma endpoint responded unexpectedly."
 
 
+async def default_openrouter_models_check(base_url: str, api_key: str) -> tuple[bool, str]:
+    """Read-only OpenRouter availability probe using the models endpoint."""
+    data, error = await _bounded_http_json(
+        f"{base_url.rstrip('/')}/models",
+        method="GET",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    if error is not None:
+        reason = error.split(":", 1)[-1].strip() or "transport_error"
+        return False, f"OpenRouter endpoint unavailable ({reason})."
+    if isinstance(data, dict) and data.get("data") is not None:
+        return True, "OpenRouter endpoint reachable (models list available)."
+    return False, "OpenRouter endpoint responded unexpectedly."
+
+
 async def default_edge_cdp_version(port: int) -> tuple[bool, str]:
     """Read-only managed Edge CDP endpoint probe on localhost."""
     data, error = await _bounded_http_json(f"http://127.0.0.1:{port}/json/version", method="GET")
@@ -515,13 +544,17 @@ async def check_live_telegram(
 async def check_live_google(
     settings: Any, google_fn, *, timeout: float = LIVE_TIMEOUT_SECONDS
 ) -> CheckResult:
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("JOBAPPLY_GOOGLE_API_KEY") or ""
+    provider = getattr(settings, "llm_provider", "gemini")
+    key_name = "OPENROUTER_API_KEY" if provider == "openrouter" else "GOOGLE_API_KEY"
+    api_key = os.getenv(key_name) or os.getenv(f"JOBAPPLY_{key_name}") or ""
     if not api_key.strip():
         return sanitize_check_result(
             CheckResult(
-                "live-gemma-endpoint", STATUS_WARN, "GOOGLE_API_KEY not configured; skipped."
+                "live-gemma-endpoint", STATUS_WARN, f"{key_name} not configured; skipped."
             )
         )
+    if provider == "openrouter" and google_fn is default_google_models_check:
+        google_fn = default_openrouter_models_check
     return await _guarded_live_probe(
         "live-gemma-endpoint", False, google_fn, settings.llm_base_url, api_key, timeout=timeout
     )

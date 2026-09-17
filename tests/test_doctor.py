@@ -104,7 +104,7 @@ def _offline_settings(tmp_path):
 @pytest.mark.asyncio
 async def test_all_offline_checks_pass_and_exit_zero(monkeypatch, tmp_path):
     fake = _offline_settings(tmp_path)
-    monkeypatch.setenv("GOOGLE_API_KEY", "synthetic-key-value")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-key-value")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:AAASyntheticTokenForTestsOnly")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     results = []
@@ -178,8 +178,9 @@ async def test_invalid_settings_skip_dependent_checks_as_warn():
     assert all("Skipped: settings" in result.detail for result in dependent)
 
 
-def test_gemma_constraint_fails_for_other_models(tmp_path):
+def test_gemini_constraint_fails_for_other_models(tmp_path):
     fake = _offline_settings(tmp_path)
+    fake.llm_provider = "gemini"
     fake.llm_model = "not-gemma"
     result = check_gemma_model_constraint(fake)
     assert result.status == STATUS_FAIL
@@ -255,12 +256,13 @@ def test_mongodb_url_syntax_checks_without_connecting(tmp_path):
 
 
 def test_credentials_are_only_reported_as_missing_names(monkeypatch):
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    result = check_credentials_configured()
+    fake = type("Settings", (), {"llm_provider": "openrouter"})()
+    result = check_credentials_configured(fake)
     assert result.status == STATUS_WARN
-    assert "GOOGLE_API_KEY" in result.detail
+    assert "OPENROUTER_API_KEY" in result.detail
     assert "your-google-api-key" not in result.detail
 
 

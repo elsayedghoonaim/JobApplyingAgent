@@ -358,18 +358,22 @@ def format_application_receipt(outcome: dict) -> str:
     score = float(outcome.get("score") or 0.0)
     lines = [
         header,
+        "━━━━━━━━━━━━━━━━━━━━",
         "",
-        f"Job: {outcome.get('title', 'Unknown title')}",
-        f"Company: {outcome.get('company', 'Unknown company')}",
-        f"Status: {status_detail}",
-        f"Fit score: {score:.0%}",
-        f"Questions answered: {outcome.get('qa_count', 0)}",
-        f"Resume: {'Edited' if outcome.get('resume_edited') else 'Base resume'}",
+        "JOB DETAILS",
+        f"• Role: {outcome.get('title', 'Unknown title')}",
+        f"• Company: {outcome.get('company', 'Unknown company')}",
+        f"• Fit score: {score:.0%}",
+        "",
+        "RESULT",
+        f"• Status: {status_detail}",
+        f"• Questions answered: {outcome.get('qa_count', 0)}",
+        f"• Resume: {'Edited' if outcome.get('resume_edited') else 'Base resume'}",
     ]
     if outcome.get("url"):
-        lines.append(f"Job link: {outcome['url']}")
+        lines.extend(["", "JOB LINK", str(outcome["url"])])
     if outcome.get("timestamp"):
-        lines.append(f"Recorded at (UTC): {outcome['timestamp']}")
+        lines.extend(["", f"Recorded at (UTC): {outcome['timestamp']}"])
     return "\n".join(lines)
 
 

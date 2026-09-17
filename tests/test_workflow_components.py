@@ -56,6 +56,7 @@ from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
     find_disallowed_required_languages,
     get_job_exclusion_reason,
+    get_location_exclusion_reason,
     get_title_exclusion_reason,
     is_machine_learning_position_title,
     is_senior_position_title,
@@ -63,7 +64,7 @@ from jobapply.utils.job_filters import (
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.limits import caps_reached
-from jobapply.utils.llm import _extract_text, get_llm
+from jobapply.utils.llm import _extract_openrouter_text, _extract_text, get_llm
 from jobapply.utils.prompts import QUALIFICATION_PROMPT
 from jobapply.utils.telegram import TelegramClient, correlated_reply_text
 
@@ -85,10 +86,11 @@ def _base_state(**updates):
     return state
 
 
-def test_single_model_configuration():
+def test_configured_llm_provider():
     settings = get_settings()
-    assert settings.llm_model == "gemma-4-31b-it"
-    assert get_llm().model == "gemma-4-31b-it"
+    assert settings.llm_provider == "openrouter"
+    assert settings.llm_model == "stealth/union-alpha"
+    assert get_llm().model == "stealth/union-alpha"
 
 
 def test_env_has_every_documented_variable_and_no_old_provider_keys():
@@ -123,6 +125,11 @@ def test_gemma_response_uses_non_thought_parts():
         ]
     }
     assert _extract_text(data) == "final answer"
+
+
+def test_openrouter_response_extracts_assistant_content():
+    data = {"choices": [{"message": {"role": "assistant", "content": "final answer"}}]}
+    assert _extract_openrouter_text(data) == "final answer"
 
 
 def test_json_extraction_handles_reasoning_wrapper():
@@ -168,6 +175,52 @@ def test_search_url_encodes_special_characters():
 def test_senior_position_titles_are_excluded(title):
     assert is_senior_position_title(title)
     assert get_job_exclusion_reason({"title": title}).startswith("Senior-level")
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Tel Aviv District, Israel",
+        "Jerusalem, Israel",
+        "Haifa, Israel",
+        "State of Palestine",
+        "Palastin",
+        "Palestinian Territories",
+        "Ramallah, West Bank",
+        "Gaza Strip",
+        "فلسطين",
+        "ישראל",
+    ],
+)
+def test_palestine_and_israel_locations_are_excluded(location):
+    job = {"title": "Machine Learning Engineer", "location": location}
+    assert get_location_exclusion_reason(job) == "Job location excluded by user preference"
+    assert get_job_exclusion_reason(job) == "Job location excluded by user preference"
+
+
+def test_non_blocked_locations_are_not_excluded_by_location():
+    assert get_location_exclusion_reason({"location": "Cairo, Egypt"}) is None
+    assert get_location_exclusion_reason({"location": "Remote"}) is None
+
+
+def test_location_exclusions_are_configurable():
+    assert get_location_exclusion_reason(
+        {"location": "Cairo, Egypt"},
+        ["Cairo"],
+    ) == "Job location excluded by user preference"
+    assert get_location_exclusion_reason(
+        {"location": "Tel Aviv, Israel"},
+        ["Cairo"],
+    ) is None
+
+
+def test_parsed_location_is_also_checked():
+    job = {
+        "title": "Machine Learning Engineer",
+        "location": "Remote",
+        "parsed_location": "Tel Aviv, Israel",
+    }
+    assert get_location_exclusion_reason(job) == "Job location excluded by user preference"
 
 
 def test_non_senior_titles_are_not_excluded_by_title_words():
@@ -529,10 +582,13 @@ async def test_telegram_question_message_contains_question_options_and_skip(mock
         options=["Yes", "No"],
     )
     telegram.send_and_wait_for_reply.assert_awaited_once()
-    assert (
-        telegram.send_and_wait_for_reply.call_args.kwargs["prompt_text"]
-        == "Are you willing to relocate?\n\n- Yes\n- No\n\n- /skip — Skip this job"
-    )
+    prompt = telegram.send_and_wait_for_reply.call_args.kwargs["prompt_text"]
+    assert prompt == "<b>Are you willing to relocate?</b>"
+    assert telegram.send_and_wait_for_reply.call_args.kwargs["inline_actions"] == [
+        "Yes",
+        "No",
+        "Skip Job",
+    ]
 
 
 def test_job_question_summary_contains_context_before_questions():
@@ -551,13 +607,14 @@ def test_job_question_summary_contains_context_before_questions():
         },
     )
 
-    assert message.startswith("JOB SUMMARY\n")
-    assert "Job: ML Engineer" in message
-    assert "Company: Acme" in message
-    assert "Location: London" in message
-    assert "Fit score: 84%" in message
-    assert "Role summary: Build reliable machine-learning services." in message
-    assert "Key matches: Python, MLOps" in message
+    assert message.startswith("<b>🎯 QUALIFIED JOB</b>\n")
+    assert "• Role: ML Engineer" in message
+    assert "• Company: Acme" in message
+    assert "• Location: London" in message
+    assert "• Fit score: 84%" in message
+    assert "<b>WHY IT MATCHES</b>\nBuild reliable machine-learning services." in message
+    assert "<b>KEY MATCHES</b>\n• Python\n• MLOps" in message
+    assert "The application will continue automatically." in message
     assert "Reply /skip to any question" in message
 
 
@@ -791,6 +848,7 @@ async def test_live_runner_forces_real_submission_mode(
         dry_run=False,
         max_jobs=4,
         max_applications=2,
+        close_resources=True,
     )
     telegram.send_message.assert_awaited_once()
     mock_input.assert_not_called()
@@ -842,6 +900,7 @@ async def test_live_seen_filter_retries_dry_run_and_pending_qualified_jobs():
 
 def test_generation_failure_never_routes_to_execution():
     assert route_after_generation({"application_status": "failed"}) == "select_next_job_node"
+    assert route_after_generation({"edits_urgent": True}) == "execution_node"
 
 
 def test_resume_input_selection():

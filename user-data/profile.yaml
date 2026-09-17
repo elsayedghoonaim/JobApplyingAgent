@@ -1,0 +1,106 @@
+name: "Elsayed Ghonaim"
+email: "elsayedghoonaim@gmail.com"
+phone: "+20 1149404893"
+location: "Cairo, Egypt"
+linkedin: "https://linkedin.com/in/elsayedghoonaim"
+github: "https://github.com/elsayedghoonaim"
+headline: "Machine Learning Engineer | Generative AI & Production ML"
+summary: >-
+  Machine Learning Engineer with 3 years of hands-on experience building and
+  deploying generative AI, natural language processing, computer vision, and
+  predictive modeling systems. Develops production-oriented Python services
+  with PyTorch, TensorFlow, FastAPI, Flask, Docker, Kubernetes, and CI/CD, with
+  public projects in LLM serving and multimodal document extraction.
+skills:
+  - Python
+  - C++
+  - Bash
+  - Perl
+  - Machine Learning
+  - PyTorch
+  - TensorFlow
+  - Scikit-learn
+  - XGBoost
+  - Random Forest
+  - CNN
+  - ResNet50
+  - YOLO
+  - LSTM
+  - Feature Engineering
+  - Model Evaluation
+  - Time Series Forecasting
+  - Large Language Models
+  - Retrieval-Augmented Generation
+  - Natural Language Processing
+  - Transformers
+  - Hugging Face
+  - vLLM
+  - llama.cpp
+  - Fine-Tuning
+  - LoRA
+  - OCR
+  - Vision-Language Models
+  - FastAPI
+  - Flask
+  - REST APIs
+  - Model Serving
+  - Docker
+  - Kubernetes
+  - GitHub Actions
+  - CI/CD
+  - Prometheus
+  - Pytest
+  - Linux
+  - Git
+  - Pandas
+  - NumPy
+  - Statsmodels
+  - OpenCV
+  - Rasterio
+  - Data Pipelines
+  - Remote Sensing
+  - Satellite Imagery
+  - Geospatial Analysis
+experience:
+  - title: "AI Engineer"
+    company: "Z2Data"
+    location: "Egypt"
+    start: "Sep 2025"
+    end: "Present"
+    highlights:
+      - "Architected a RAG system integrating proprietary datasets into an internal chatbot."
+      - "Fine-tuned transformer-based LLMs on domain-specific datasets."
+      - "Built OCR and document-processing pipelines for retrieval-ready data."
+      - "Productionized AI/ML capabilities through REST APIs and internal services."
+  - title: "Machine Learning Engineer"
+    company: "Arab Company for Training and Artificial Intelligence Applications (ACTAIA)"
+    location: "Cairo, Egypt"
+    start: "Jul 2025"
+    end: "Dec 2025"
+    highlights:
+      - "Developed end-to-end AI applications across model training, backend services, and frontend integration."
+      - "Designed and deployed a Smart Fire Alert System and Multi-Task Medical Image Classifier."
+  - title: "Co-Founder and AI/ML Team Lead"
+    company: "Larvest"
+    location: "Cairo, Egypt"
+    start: "Jan 2024"
+    end: "Jul 2025"
+    highlights:
+      - "Led a cross-functional team of five engineers and remote sensing specialists."
+      - "Designed a YOLO-based crop-disease detection pipeline for drone imagery."
+      - "Deployed machine learning models through Flask REST APIs."
+education:
+  degree: "Bachelor Degree in Navigation Science and Space Technology"
+  institution: "Beni-Suef University"
+  location: "New Beni-Suef City, Egypt"
+  start: "Sep 2020"
+  end: "Jul 2025"
+  gpa: "3.0"
+certifications:
+  - "Generative AI with Large Language Models - AWS, 2024"
+  - "Deep Learning Specialization - DeepLearning.AI, 2024"
+  - "TensorFlow Developer Professional Certificate - DeepLearning.AI, 2024"
+  - "Machine Learning Specialization - DeepLearning.AI, 2023"
+form_defaults:
+  years_of_experience: "3"
+  highest_education: "Bachelor's Degree"

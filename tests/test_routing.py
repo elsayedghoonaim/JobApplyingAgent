@@ -73,7 +73,7 @@ def test_route_after_qualification():
 
 def test_route_after_generation():
     state = {"edits_urgent": True}
-    assert route_after_generation(state) == "approval_node"
+    assert route_after_generation(state) == "execution_node"
 
     state = {"edits_urgent": False}
     assert route_after_generation(state) == "execution_node"

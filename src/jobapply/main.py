@@ -85,6 +85,7 @@ async def _finalize_run(
     workflow_error: BaseException | None,
     interrupted: bool,
     cancelled: asyncio.CancelledError | None = None,
+    close_resources: bool = True,
 ) -> None:
     """Centralized finalization: cleanup, single summary publication, shutdown.
 
@@ -102,8 +103,12 @@ async def _finalize_run(
     behavior when finalization succeeds, but a failed durable publication is
     still propagated so callers cannot believe finalization succeeded.
     """
-    llm_close_error = await _attempt_cleanup("llm_client", close_llm_client)
-    mongo_close_error = await _attempt_cleanup("mongo", DeduplicationStore.close)
+    llm_close_error = (
+        await _attempt_cleanup("llm_client", close_llm_client) if close_resources else None
+    )
+    mongo_close_error = (
+        await _attempt_cleanup("mongo", DeduplicationStore.close) if close_resources else None
+    )
     cleanup_errors = [err for err in (llm_close_error, mongo_close_error) if err is not None]
     terminal_state = state
 
@@ -197,6 +202,7 @@ async def run(
     max_jobs: Optional[int] = None,
     location: Optional[str] = None,
     recency_days: Optional[int] = None,
+    close_resources: bool = True,
 ):
     """Main entry point for the job application agent.
 
@@ -206,6 +212,7 @@ async def run(
         max_applications: Override .env setting.
         location: Override configured LinkedIn search location.
         recency_days: Override configured search recency window in days.
+        close_resources: Close process-wide clients when this run finishes.
     """
     settings = get_settings()
     effective_dry_run = dry_run if dry_run is not None else settings.dry_run
@@ -575,6 +582,7 @@ async def run(
         workflow_error=workflow_error,
         interrupted=interrupted,
         cancelled=cancelled_error,
+        close_resources=close_resources,
     )
 
 

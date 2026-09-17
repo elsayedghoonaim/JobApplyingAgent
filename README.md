@@ -1,7 +1,7 @@
 # JobApply
 
-Autonomous, checkpointed LinkedIn Easy Apply workflow powered exclusively by
-`gemma-4-31b-it`. The agent searches recent Easy Apply jobs, evaluates fit,
+Autonomous, checkpointed LinkedIn Easy Apply workflow with selectable Gemini
+or OpenRouter LLM access. The agent searches recent Easy Apply jobs, evaluates fit,
 generates application documents, requests Telegram answers when needed, and
 uses an existing signed-in Microsoft Edge session.
 
@@ -20,7 +20,7 @@ uses an existing signed-in Microsoft Edge session.
 - Python 3.11+ with `uv`
 - MongoDB on `mongodb://localhost:27017`
 - Microsoft Edge
-- Google API key with access to `gemma-4-31b-it`
+- A Google Gemini or OpenRouter API key
 - Telegram bot and chat ID
 
 ## Installation
@@ -47,13 +47,16 @@ Copy-Item templates\* user-data\
 Fill every required value in `.env`. The LLM settings are:
 
 ```env
+JOBAPPLY_LLM_PROVIDER=gemini
 GOOGLE_API_KEY=...
+OPENROUTER_API_KEY=...
 JOBAPPLY_LLM_MODEL=gemma-4-31b-it
 JOBAPPLY_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 JOBAPPLY_DATA_DIR=user-data
 ```
 
-`JOBAPPLY_LLM_MODEL` is validated and cannot select another model.
+Set `JOBAPPLY_LLM_PROVIDER` to `gemini` or `openrouter`, then set its matching
+API key, model slug, and base URL.
 `JOBAPPLY_DATA_DIR` defaults to `user-data` and points to the repository-local or absolute directory containing `profile.yaml`, `resume.md`, and `resume.pdf`.
 
 ## User Data & Templates

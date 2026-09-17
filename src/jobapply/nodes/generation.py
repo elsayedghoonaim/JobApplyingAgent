@@ -1,17 +1,15 @@
-"""Generation node - cover letter + urgency check."""
+"""Generation node - cover letter preparation for automatic application."""
 
 from langsmith.run_helpers import trace
 
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
-from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
 from jobapply.utils.paths import get_cover_letter_path
-from jobapply.utils.prompts import get_cover_letter_prompt, get_urgency_check_prompt
+from jobapply.utils.prompts import get_cover_letter_prompt
 from jobapply.utils.redaction import redact_string
 from jobapply.utils.source_cache import (
     get_cached_profile,
-    get_cached_resume_markdown,
 )
 from jobapply.utils.tracing import get_safe_job_metadata
 
@@ -22,8 +20,7 @@ def _data_path(*parts: str) -> str:
 
 
 async def generation_node(state: JobApplyState) -> dict:
-    """Prepare per-job documents and decide whether resume edits need approval."""
-    settings = get_settings()
+    """Prepare per-job documents for automatic execution with the base resume."""
     current_job = state.get("current_job")
     qual_result = state.get("qualification_result") or {}
     errors = list(state.get("errors") or [])
@@ -58,12 +55,6 @@ async def generation_node(state: JobApplyState) -> dict:
         _, profile_text = get_cached_profile()
     except Exception as e:
         errors.append(f"Profile load failed for generation: {redact_string(str(e))}")
-
-    resume_text = ""
-    try:
-        resume_text = get_cached_resume_markdown()
-    except Exception as e:
-        errors.append(f"Resume markdown load failed for generation: {redact_string(str(e))}")
 
     try:
         llm = get_llm(temperature=0.4, max_output_tokens=768)
@@ -102,60 +93,5 @@ async def generation_node(state: JobApplyState) -> dict:
         updates["application_status"] = "failed"
         updates["application_error"] = error_msg
         return {**updates, "errors": errors}
-
-    score = qual_result.get("score", 0.0)
-    if score >= settings.urgent_edit_threshold and resume_text:
-        try:
-            llm = get_llm(
-                temperature=0.2,
-                max_output_tokens=768,
-                response_mime_type="application/json",
-                response_json_schema={
-                    "type": "object",
-                    "properties": {
-                        "edits_urgent": {"type": "boolean"},
-                        "proposed_edits": {"type": "string"},
-                        "edit_reasoning": {"type": "string"},
-                    },
-                    "required": ["edits_urgent", "proposed_edits", "edit_reasoning"],
-                },
-            )
-            urgency_prompt = get_urgency_check_prompt(
-                resume_text,
-                current_job.get("description", ""),
-                score,
-            )
-
-            async with trace(
-                "llm_urgency_check",
-                run_type="chain",
-                metadata={
-                    **get_safe_job_metadata(current_job, include_description=False),
-                    "score": score,
-                    "threshold": settings.urgent_edit_threshold,
-                },
-            ) as run_tree:
-                urgency_result = await llm.ainvoke(urgency_prompt)
-                urgency_text = getattr(urgency_result, "content", str(urgency_result))
-                urgency_data = extract_json_object(urgency_text)
-
-                proposed_edits = urgency_data.get("proposed_edits") or ""
-                edits_urgent = bool(urgency_data.get("edits_urgent")) and bool(
-                    proposed_edits.strip()
-                )
-
-                updates["edits_urgent"] = edits_urgent
-                updates["proposed_edits"] = proposed_edits if edits_urgent else None
-                updates["edit_reasoning"] = (
-                    urgency_data.get("edit_reasoning") if edits_urgent else None
-                )
-
-                if run_tree:
-                    run_tree.metadata["edits_urgent"] = edits_urgent
-                    run_tree.metadata["has_proposed_edits"] = bool(proposed_edits)
-        except Exception as e:
-            errors.append(
-                f"Urgency check failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
-            )
 
     return {**updates, "errors": errors}

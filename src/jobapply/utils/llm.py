@@ -1,4 +1,4 @@
-"""Single-model Gemma client for the Google generateContent REST API."""
+"""Configurable Gemini/OpenRouter LLM client."""
 
 import asyncio
 from dataclasses import dataclass
@@ -46,6 +46,7 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
 
 
 def _extract_text(data: dict[str, Any]) -> str:
+    """Extract text from a native Gemini generateContent response."""
     candidates = data.get("candidates") or []
     if not candidates:
         feedback = data.get("promptFeedback") or {}
@@ -60,8 +61,26 @@ def _extract_text(data: dict[str, Any]) -> str:
     return text
 
 
+def _extract_openrouter_text(data: dict[str, Any]) -> str:
+    """Extract text from an OpenAI-compatible OpenRouter response."""
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"OpenRouter returned no choices: {data.get('error') or {}}")
+    content = choices[0].get("message", {}).get("content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") in (None, "text")
+        )
+    text = str(content or "").strip()
+    if not text:
+        raise RuntimeError("OpenRouter returned an empty response")
+    return text
+
+
 class GemmaChat:
-    """Async chat interface backed only by ``gemma-4-31b-it``."""
+    """Async chat interface backed by Gemini or OpenRouter."""
 
     def __init__(
         self,
@@ -72,6 +91,7 @@ class GemmaChat:
         response_json_schema: dict[str, Any] | None = None,
     ):
         settings = get_settings()
+        self.provider = settings.llm_provider
         self.model = settings.llm_model
         self.api_key = api_key
         self.base_url = settings.llm_base_url.rstrip("/").removesuffix("/openai")
@@ -81,36 +101,59 @@ class GemmaChat:
         self.response_json_schema = response_json_schema
 
     async def ainvoke(self, prompt: str) -> LLMResponse:
-        url = f"{self.base_url}/models/{quote(self.model, safe='')}:generateContent"
-        payload = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
+        if self.provider == "openrouter":
+            url = f"{self.base_url.removesuffix('/chat/completions')}/chat/completions"
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": self.temperature,
-                "maxOutputTokens": self.max_output_tokens,
-            },
-        }
-        if self.response_mime_type:
-            payload["generationConfig"]["responseMimeType"] = self.response_mime_type
-        if self.response_json_schema:
-            payload["generationConfig"]["responseJsonSchema"] = self.response_json_schema
-        headers = {"x-goog-api-key": self.api_key}
+                "max_tokens": self.max_output_tokens,
+            }
+            if self.response_mime_type == "application/json":
+                payload["response_format"] = {"type": "json_object"}
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://localhost/jobapply",
+                "X-Title": "JobApply",
+            }
+        else:
+            url = f"{self.base_url}/models/{quote(self.model, safe='')}:generateContent"
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": self.temperature,
+                    "maxOutputTokens": self.max_output_tokens,
+                },
+            }
+            if self.response_mime_type:
+                payload["generationConfig"]["responseMimeType"] = self.response_mime_type
+            if self.response_json_schema:
+                payload["generationConfig"]["responseJsonSchema"] = self.response_json_schema
+            headers = {"x-goog-api-key": self.api_key}
+
         client = _get_http_client()
         for attempt in range(3):
             try:
                 response = await client.post(url, headers=headers, json=payload)
-                if response.status_code not in (429, 503) or attempt == 2:
+                if response.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
                     response.raise_for_status()
-                    return LLMResponse(content=_extract_text(response.json()))
+                    extractor = (
+                        _extract_openrouter_text if self.provider == "openrouter" else _extract_text
+                    )
+                    return LLMResponse(content=extractor(response.json()))
                 await asyncio.sleep(_retry_delay(response, attempt))
             except httpx.HTTPStatusError as exc:
                 msg = redact_string(str(exc), extra_secrets=[self.api_key])
-                raise RuntimeError(f"Gemma API HTTP error: {msg}") from None
+                provider_name = "OpenRouter" if self.provider == "openrouter" else "Gemini"
+                raise RuntimeError(f"{provider_name} API HTTP error: {msg}") from None
             except Exception as exc:
                 if attempt == 2 or not isinstance(
                     exc, (httpx.TransportError, httpx.TimeoutException)
                 ):
                     msg = redact_string(str(exc), extra_secrets=[self.api_key])
-                    raise RuntimeError(f"Gemma API request failed: {msg}") from None
+                    provider_name = "OpenRouter" if self.provider == "openrouter" else "Gemini"
+                    raise RuntimeError(f"{provider_name} API request failed: {msg}") from None
                 await asyncio.sleep(min(2.0**attempt, 8.0))
         raise AssertionError("unreachable")
 
@@ -121,12 +164,14 @@ def get_llm(
     response_mime_type: str | None = None,
     response_json_schema: dict[str, Any] | None = None,
 ) -> GemmaChat:
-    """Return the project's only configured LLM client."""
+    """Return the configured Gemini or OpenRouter client."""
     import os
 
-    api_key = os.getenv("GOOGLE_API_KEY")
+    settings = get_settings()
+    key_name = "OPENROUTER_API_KEY" if settings.llm_provider == "openrouter" else "GOOGLE_API_KEY"
+    api_key = os.getenv(key_name)
     if not api_key:
-        raise RuntimeError("Gemma requires GOOGLE_API_KEY to be set")
+        raise RuntimeError(f"{settings.llm_provider} requires {key_name} to be set")
     return GemmaChat(
         api_key=api_key,
         temperature=temperature,

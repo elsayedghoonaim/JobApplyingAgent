@@ -9,6 +9,7 @@ import pytest
 from jobapply.main import run
 from jobapply.nodes.qualification import qualification_node
 from jobapply.nodes.search import search_node
+from jobapply.settings import get_settings
 from jobapply.utils.account_safety import (
     AccountSafetyBarrierError,
     AccountSafetyBarrierType,
@@ -190,6 +191,8 @@ async def test_search_completeness_inspects_all_cards_regardless_of_application_
     initial_seen = {"already_seen_0"}
     state = _base_state(max_applications=1, applications_count=0, seen_job_ids=initial_seen)
     result = await search_node(state)
+
+    assert page.goto.await_args.kwargs["timeout"] == get_settings().linkedin_navigation_timeout_ms
 
     # find_seen_ids must be called exactly once with all 6 card IDs
     mock_store.find_seen_ids.assert_awaited_once()
@@ -380,6 +383,12 @@ async def test_deterministic_exclusions_persisted_and_transient_failures_not_per
     cards_data = [
         {"job_id": "already_applied_1", "title": "Dev 1", "applied": "Applied 2 days ago"},
         {"job_id": "senior_1", "title": "Senior Staff Architect", "company": "BigCo"},
+        {
+            "job_id": "blocked_location_1",
+            "title": "ML Engineer",
+            "company": "BlockedCo",
+            "location": "Tel Aviv District, Israel",
+        },
         {"job_id": "lang_1", "title": "ML Engineer 2", "company": "EuroCorp"},
         {"job_id": "dom_fail_1", "title": "Dev 3", "dom_fail": True},
         {"job_id": "valid_1", "title": "Machine Learning Engineer", "company": "GoodCorp"},
@@ -408,12 +417,14 @@ async def test_deterministic_exclusions_persisted_and_transient_failures_not_per
     persisted_ids = {item["job_id"] for item in persisted_items}
     assert "already_applied_1" in persisted_ids
     assert "senior_1" in persisted_ids
+    assert "blocked_location_1" in persisted_ids
     assert "dom_fail_1" not in persisted_ids
     assert "valid_1" not in persisted_ids
 
     # Returned seen_job_ids contains search-excluded IDs so they are not re-inspected
     assert "already_applied_1" in result["seen_job_ids"]
     assert "senior_1" in result["seen_job_ids"]
+    assert "blocked_location_1" in result["seen_job_ids"]
     assert "valid_1" not in result["seen_job_ids"]
 
 

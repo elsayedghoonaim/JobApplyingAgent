@@ -14,6 +14,7 @@ from jobapply.utils.account_safety import (
 )
 from jobapply.utils.browser import managed_browser
 from jobapply.utils.dedup import DeduplicationStore
+from jobapply.utils.llm import close_llm_client
 from jobapply.utils.telegram import TelegramClient
 
 SIGNIN_PATH_MARKERS = (
@@ -42,10 +43,11 @@ def linkedin_url_is_signed_in(url: str) -> bool:
 def validate_local_configuration() -> None:
     """Fail early for missing model credentials or required application files."""
     settings = get_settings()
-    if settings.llm_model != "gemma-4-31b-it":
-        raise RuntimeError("JOBAPPLY_LLM_MODEL must be gemma-4-31b-it")
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise RuntimeError("GOOGLE_API_KEY is missing from .env")
+    key_name = (
+        "OPENROUTER_API_KEY" if settings.llm_provider == "openrouter" else "GOOGLE_API_KEY"
+    )
+    if not os.getenv(key_name):
+        raise RuntimeError(f"{key_name} is missing from .env")
     required_files = (
         Path(settings.resolve_data_path("profile.yaml")),
         Path(settings.resolve_data_path("resume.md")),
@@ -66,7 +68,7 @@ async def wait_for_linkedin_signin() -> None:
             response = await page.goto(
                 f"{settings.linkedin_base_url.rstrip('/')}/feed/",
                 wait_until="domcontentloaded",
-                timeout=30000,
+                timeout=settings.linkedin_navigation_timeout_ms,
             )
             http_status = response.status if response else None
             await page.bring_to_front()
@@ -118,6 +120,7 @@ async def run_live(
     preflight_only: bool = False,
     max_jobs: int | None = None,
     max_applications: int | None = None,
+    close_resources: bool = True,
 ) -> None:
     """Run preflight and, unless requested otherwise, the real submission workflow."""
     settings = get_settings()
@@ -146,20 +149,35 @@ async def run_live(
         print(f"Maximum applications to submit: {session_cap}")
 
         await TelegramClient().send_message(
-            "🚀 LIVE JOB APPLY SESSION STARTED\n\n"
-            f"Search queries: {len(settings.search_queries_list)}\n"
-            f"Pages per query: {settings.pages_per_query}\n"
-            f"Session submission cap: {session_cap}\n\n"
-            "Questions will arrive here. Application receipts will follow each result."
+            "🚀 JOB APPLY SESSION STARTED\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "\n"
+            "MODE\n"
+            "• Live application submission\n"
+            "• Qualified jobs proceed automatically\n"
+            "• Base resume used without approval prompts\n"
+            "\n"
+            "SEARCH SCOPE\n"
+            f"• Queries: {', '.join(settings.search_queries_list)}\n"
+            f"• Location: {settings.search_location}\n"
+            f"• Pages per query: {settings.pages_per_query}\n"
+            f"• Submission limit: {session_cap}\n"
+            "\n"
+            "WHAT TO EXPECT\n"
+            "• A receipt after each application result\n"
+            "• A question only when the form cannot be answered safely\n"
+            "• A final summary when the session ends"
         )
         print("Starting LIVE workflow. Confirmed applications may be submitted.")
         await run(
             dry_run=False,
             max_jobs=max_jobs,
             max_applications=max_applications,
+            close_resources=close_resources,
         )
     finally:
-        await DeduplicationStore.close()
+        if close_resources:
+            await DeduplicationStore.close()
 
 
 def _non_negative_int(value: str) -> int:
@@ -189,14 +207,39 @@ def main() -> None:
         type=_non_negative_int,
         help="optional submission cap for this run",
     )
+    parser.add_argument(
+        "--telegram-control",
+        action="store_true",
+        help="keep a Telegram controller online for /report, /stop, /run, and /status",
+    )
     args = parser.parse_args()
-    asyncio.run(
-        run_live(
+
+    async def _entrypoint() -> None:
+        if args.telegram_control and not args.preflight_only:
+            from jobapply.utils.telegram_control import TelegramControlService
+
+            async def controlled_run() -> None:
+                await run_live(
+                    max_jobs=args.max_jobs,
+                    max_applications=args.max_applications,
+                    close_resources=False,
+                )
+
+            try:
+                await TelegramControlService(controlled_run).serve(start_immediately=True)
+            finally:
+                try:
+                    await close_llm_client()
+                finally:
+                    await DeduplicationStore.close()
+            return
+        await run_live(
             preflight_only=args.preflight_only,
             max_jobs=args.max_jobs,
             max_applications=args.max_applications,
         )
-    )
+
+    asyncio.run(_entrypoint())
 
 
 if __name__ == "__main__":

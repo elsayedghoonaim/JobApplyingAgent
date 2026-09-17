@@ -42,7 +42,6 @@ CHOICE_PLACEHOLDERS: tuple[str, ...] = (
 CHOICE_SENTINEL_VALUES: frozenset[str] = frozenset(
     {
         "",
-        "none",
         "placeholder",
         "select",
         "-- select --",
@@ -87,6 +86,11 @@ def choice_is_unanswered(value: str | None, visible_text: str | None = None) -> 
 
     # 1. Both empty
     if not v_norm and not t_norm:
+        return True
+
+    # A raw sentinel value of "none" is unanswered only when it has no visible
+    # label. A visible "None" is a legitimate choice in language-level lists.
+    if v_norm == "none" and not t_norm:
         return True
 
     # 2. Visible selected text matches a configured placeholder marker or exact sentinel

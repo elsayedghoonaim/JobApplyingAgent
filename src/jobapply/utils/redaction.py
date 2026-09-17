@@ -31,6 +31,7 @@ _EXACT_SENSITIVE_KEYS: Set[str] = {
     "api_key",
     "apikey",
     "google_api_key",
+    "openrouter_api_key",
     "telegram_bot_token",
     "bot_token",
     "token",
@@ -78,10 +79,12 @@ def _get_dynamic_secret_literals() -> list[str]:
     # every durable/logged payload.
     env_keys = [
         "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
         "TELEGRAM_BOT_TOKEN",
         "LANGSMITH_API_KEY",
         "MONGODB_URL",
         "JOBAPPLY_GOOGLE_API_KEY",
+        "JOBAPPLY_OPENROUTER_API_KEY",
         "JOBAPPLY_TELEGRAM_BOT_TOKEN",
         "JOBAPPLY_LANGSMITH_API_KEY",
         "JOBAPPLY_MONGODB_URL",

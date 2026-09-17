@@ -37,6 +37,7 @@ from jobapply.execution import (
     is_skip_job_reply,
     manual_review_update,
     match_choice_index,
+    select_autocomplete_option,
     select_live_role_radio_option,
     send_application_receipt,
     skipped_update,
@@ -90,6 +91,10 @@ from jobapply.utils.account_safety import (
 )
 from jobapply.utils.attempts import AttemptRepository, QuotaRepository
 from jobapply.utils.browser import get_randomized_delay, managed_browser, take_error_screenshot
+from jobapply.utils.candidate_facts import (
+    CandidateFactsRepository,
+    resolve_answer_from_memory,
+)
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.limits import caps_reached
 from jobapply.utils.llm import get_llm as _default_get_llm
@@ -201,8 +206,67 @@ async def ask_user_for_question(
     run_id: str | None = None,
     ordinal: int = 0,
 ) -> tuple[str | None, bool]:
-    """Ask a question using the module-level get_llm and translate/extract dependencies."""
-    return await _ext_ask_user_for_question(
+    """Reuse fresh candidate facts before asking Telegram, then remember replies."""
+    memory_configured = all(
+        hasattr(settings, name)
+        for name in (
+            "mongodb_db",
+            "candidate_facts_collection",
+            "candidate_fact_validity_days",
+            "candidate_fact_history_limit",
+        )
+    )
+    repository = None
+    identity = None
+    previous_fact = None
+    reusable_answer = None
+    try:
+        if not memory_configured:
+            raise LookupError("candidate memory is not configured")
+        repository = CandidateFactsRepository(settings=settings)
+        identity, previous_fact, reusable_answer = await resolve_answer_from_memory(
+            question_text,
+            job,
+            options,
+            repository,
+        )
+        if (
+            previous_fact is not None
+            and reusable_answer is not None
+            and not previous_fact.is_expired()
+        ):
+            log_event(
+                "info",
+                "candidate_facts.reused",
+                "A current saved candidate fact answered the application question.",
+                run_id=run_id,
+                job_id=str(job.get("job_id") or "") or None,
+                node="execution_node",
+                details={"fact_key": identity.fact_key, "scope": identity.scope},
+            )
+            return reusable_answer, False
+    except Exception as exc:
+        log_event(
+            "warning",
+            "candidate_facts.lookup_unavailable",
+            "Candidate fact lookup failed; asking through Telegram.",
+            run_id=run_id,
+            job_id=str(job.get("job_id") or "") or None,
+            node="execution_node",
+            exc=exc,
+        )
+        identity = None
+        previous_fact = None
+        reusable_answer = None
+
+    expired_compatible_fact = (
+        previous_fact
+        if previous_fact is not None
+        and previous_fact.is_expired()
+        and reusable_answer is not None
+        else None
+    )
+    answer, timed_out = await _ext_ask_user_for_question(
         question_text,
         job,
         telegram,
@@ -213,7 +277,44 @@ async def ask_user_for_question(
         get_llm_fn=get_llm,
         translate_fn=translate_question_for_telegram,
         extract_fn=extract_answer_from_reply,
+        previous_answer=(
+            expired_compatible_fact.value if expired_compatible_fact is not None else None
+        ),
+        previous_confirmed_at=(
+            expired_compatible_fact.confirmed_at
+            if expired_compatible_fact is not None
+            else None
+        ),
     )
+    if (
+        answer is not None
+        and not timed_out
+        and identity is not None
+        and identity.remember
+        and repository is not None
+    ):
+        try:
+            await repository.remember(identity, answer, question_text)
+            log_event(
+                "info",
+                "candidate_facts.confirmed",
+                "A Telegram form answer was saved with a confirmation date.",
+                run_id=run_id,
+                job_id=str(job.get("job_id") or "") or None,
+                node="execution_node",
+                details={"fact_key": identity.fact_key, "scope": identity.scope},
+            )
+        except Exception as exc:
+            log_event(
+                "warning",
+                "candidate_facts.save_unavailable",
+                "The answer was accepted but could not be saved as a candidate fact.",
+                run_id=run_id,
+                job_id=str(job.get("job_id") or "") or None,
+                node="execution_node",
+                exc=exc,
+            )
+    return answer, timed_out
 
 
 async def wait_for_submission_or_safety(
@@ -336,6 +437,34 @@ async def execution_node(state: JobApplyState) -> dict:
         )
 
     telegram = TelegramClient()
+    question_summary_sent = False
+
+    async def ask_application_question(
+        question_text: str,
+        *,
+        options: list[str] | None = None,
+        ordinal: int = 0,
+    ) -> tuple[str | None, bool]:
+        """Send job context once, then keep each Q&A prompt question-only."""
+        nonlocal question_summary_sent
+        if not question_summary_sent:
+            await telegram.send_message(
+                format_job_question_summary(
+                    current_job,
+                    state.get("qualification_result"),
+                ),
+                parse_mode="HTML",
+            )
+            question_summary_sent = True
+        return await ask_user_for_question(
+            question_text,
+            current_job,
+            telegram,
+            settings,
+            options=options,
+            run_id=run_id,
+            ordinal=ordinal,
+        )
 
     # Load profile for auto-fill
     profile_path = settings.resolve_data_path("profile.yaml")
@@ -446,13 +575,6 @@ async def execution_node(state: JobApplyState) -> dict:
         ) as run_tree:
             async with managed_browser() as (browser, context):
                 page = await context.new_page()
-                await telegram.send_message(
-                    format_job_question_summary(
-                        current_job,
-                        state.get("qualification_result"),
-                    )
-                )
-
                 log_event(
                     "info",
                     "execution.started",
@@ -479,7 +601,11 @@ async def execution_node(state: JobApplyState) -> dict:
                     job_id=job_id or None,
                     node="execution_node",
                 )
-                response = await page.goto(current_job["url"], wait_until="domcontentloaded")
+                response = await page.goto(
+                    current_job["url"],
+                    wait_until="domcontentloaded",
+                    timeout=settings.linkedin_navigation_timeout_ms,
+                )
                 http_status = response.status if response else None
                 await asyncio.sleep(get_randomized_delay())
 
@@ -750,12 +876,8 @@ async def execution_node(state: JobApplyState) -> dict:
                                     "question_fingerprint": fingerprint(label),
                                 },
                             )
-                            answer, timed_out = await ask_user_for_question(
+                            answer, timed_out = await ask_application_question(
                                 label,
-                                current_job,
-                                telegram,
-                                settings,
-                                run_id=run_id,
                                 ordinal=len(form_qa_exchanges),
                             )
 
@@ -789,6 +911,23 @@ async def execution_node(state: JobApplyState) -> dict:
                             )
                             await input_elem.fill(str(auto_value))
                             await asyncio.sleep(0.3)
+                            if "city" in label.lower() or "location" in label.lower():
+                                selection_method = await select_autocomplete_option(
+                                    page,
+                                    input_elem,
+                                    str(auto_value),
+                                )
+                                if selection_method:
+                                    log_event(
+                                        "debug",
+                                        "execution.autocomplete_selected",
+                                        "[LIVE] Selected location autocomplete suggestion.",
+                                        run_id=run_id,
+                                        job_id=job_id or None,
+                                        node="execution_node",
+                                        details={"method": selection_method},
+                                    )
+                                    await asyncio.sleep(0.2)
 
                     # 1. Handle Fieldsets (Radio Button Groups)
                     fieldsets = await modal.query_selector_all("fieldset")
@@ -852,13 +991,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                     "option_count": len(option_labels),
                                 },
                             )
-                            answer, timed_out = await ask_user_for_question(
+                            answer, timed_out = await ask_application_question(
                                 prompt_question,
-                                current_job,
-                                telegram,
-                                settings,
                                 options=option_labels,
-                                run_id=run_id,
                                 ordinal=len(form_qa_exchanges),
                             )
 
@@ -977,13 +1112,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                 "option_count": len(labels),
                             },
                         )
-                        answer, timed_out = await ask_user_for_question(
+                        answer, timed_out = await ask_application_question(
                             question,
-                            current_job,
-                            telegram,
-                            settings,
                             options=labels,
-                            run_id=run_id,
                             ordinal=len(form_qa_exchanges),
                         )
 
@@ -1049,11 +1180,12 @@ async def execution_node(state: JobApplyState) -> dict:
                     )
                     for combo in custom_combos:
                         tag_name = await combo.evaluate("el => el.tagName.toLowerCase()")
-                        current_value = (
-                            await combo.input_value()
-                            if tag_name in ("input", "textarea")
-                            else (await combo.inner_text()).strip()
-                        )
+                        # Text-backed comboboxes need a value typed before their
+                        # suggestions can be selected. Defer them to the standard
+                        # text-field path below.
+                        if tag_name in ("input", "textarea"):
+                            continue
+                        current_value = (await combo.inner_text()).strip()
                         placeholder = await combo.get_attribute("placeholder")
                         if not choice_is_unanswered(current_value, placeholder):
                             continue
@@ -1099,13 +1231,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                 "option_count": len(labels),
                             },
                         )
-                        answer, timed_out = await ask_user_for_question(
+                        answer, timed_out = await ask_application_question(
                             question,
-                            current_job,
-                            telegram,
-                            settings,
                             options=labels,
-                            run_id=run_id,
                             ordinal=len(form_qa_exchanges),
                         )
 
@@ -1244,13 +1372,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                         "option_count": len(option_labels),
                                     },
                                 )
-                                answer, timed_out = await ask_user_for_question(
+                                answer, timed_out = await ask_application_question(
                                     prompt_question,
-                                    current_job,
-                                    telegram,
-                                    settings,
                                     options=option_labels,
-                                    run_id=run_id,
                                     ordinal=len(form_qa_exchanges),
                                 )
 
@@ -1332,12 +1456,8 @@ async def execution_node(state: JobApplyState) -> dict:
                                         "question_fingerprint": fingerprint(label),
                                     },
                                 )
-                                answer, timed_out = await ask_user_for_question(
+                                answer, timed_out = await ask_application_question(
                                     label,
-                                    current_job,
-                                    telegram,
-                                    settings,
-                                    run_id=run_id,
                                     ordinal=len(form_qa_exchanges),
                                 )
 
@@ -1387,6 +1507,23 @@ async def execution_node(state: JobApplyState) -> dict:
                                 )
                                 await input_elem.fill(auto_value)
                                 await asyncio.sleep(0.3)
+                                if "city" in label.lower() or "location" in label.lower():
+                                    selection_method = await select_autocomplete_option(
+                                        page,
+                                        input_elem,
+                                        str(auto_value),
+                                    )
+                                    if selection_method:
+                                        log_event(
+                                            "debug",
+                                            "execution.autocomplete_selected",
+                                            "[LIVE] Selected location autocomplete suggestion.",
+                                            run_id=run_id,
+                                            job_id=job_id or None,
+                                            node="execution_node",
+                                            details={"method": selection_method},
+                                        )
+                                        await asyncio.sleep(0.2)
 
                     # 3. Handle Checkboxes
                     checkboxes = await modal.query_selector_all("input[type='checkbox']")
@@ -1415,13 +1552,9 @@ async def execution_node(state: JobApplyState) -> dict:
                             if settings.auto_accept_application_terms:
                                 consent_granted = True
                             else:
-                                answer, timed_out = await ask_user_for_question(
+                                answer, timed_out = await ask_application_question(
                                     f"Accept this application agreement? {cb_label}",
-                                    current_job,
-                                    telegram,
-                                    settings,
                                     options=["Yes", "No"],
-                                    run_id=run_id,
                                     ordinal=len(form_qa_exchanges),
                                 )
 
@@ -1477,13 +1610,9 @@ async def execution_node(state: JobApplyState) -> dict:
                                 cb_label,
                             )
                             if cb_label or required_choice:
-                                answer, timed_out = await ask_user_for_question(
+                                answer, timed_out = await ask_application_question(
                                     cb_label or "Select this required option?",
-                                    current_job,
-                                    telegram,
-                                    settings,
                                     options=["Yes", "No"],
-                                    run_id=run_id,
                                     ordinal=len(form_qa_exchanges),
                                 )
 
@@ -2101,7 +2230,12 @@ async def execution_node(state: JobApplyState) -> dict:
         await _safe_close_page(page)
         try:
             await telegram.send_message(
-                f"Job skipped: {current_job['title']} at {current_job['company']}."
+                "⏭️ JOB SKIPPED\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "\n"
+                f"• Role: {current_job['title']}\n"
+                f"• Company: {current_job['company']}\n"
+                "• Reason: You selected Skip Job while answering a form question."
             )
         except Exception as telegram_exc:
             log_event(

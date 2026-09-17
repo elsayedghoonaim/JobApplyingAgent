@@ -92,13 +92,15 @@ def route_after_qualification(state: JobApplyState) -> str:
 
 
 def route_after_generation(state: JobApplyState) -> str:
-    """Route after generation - fast path or approval path."""
+    """Send every prepared qualified job directly to execution.
+
+    Resume-edit suggestions remain advisory. Execution uses the base resume, so
+    a qualified job never waits for a separate approval response.
+    """
     if state.get("account_safety_paused"):
         return "notification_node"
     if state.get("application_status") == "failed":
         return "select_next_job_node"
-    if state.get("edits_urgent", False):
-        return "approval_node"
     return "execution_node"
 
 
@@ -209,8 +211,8 @@ def build_graph() -> StateGraph:
         "generation_node",
         generation_node,
         metadata={
-            "description": "Cover letter + urgency check generation",
-            "operations": ["cover letter LLM", "urgency check LLM", "file output"],
+            "description": "Cover letter generation for automatic application",
+            "operations": ["cover letter LLM", "file output"],
         },
     )
     builder.add_node(
@@ -290,13 +292,12 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # generate → execute (fast path) or approval (rare edit path)
+    # Qualified jobs continue automatically after document generation.
     builder.add_conditional_edges(
         "generation_node",
         route_after_generation,
         {
             "execution_node": "execution_node",
-            "approval_node": "approval_node",
             "notification_node": "notification_node",
         },
     )

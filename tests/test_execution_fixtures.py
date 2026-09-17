@@ -5,6 +5,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -19,6 +20,7 @@ from jobapply.execution import (
     get_form_field_label,
     get_radio_option_label,
     is_known_field,
+    select_autocomplete_option,
     select_live_radio_option,
     select_radio_option,
     text_indicates_already_applied,
@@ -611,6 +613,7 @@ async def test_fixture_select_placeholders():
     assert choice_is_unanswered(None, None)
     assert choice_is_unanswered("select", None)
     assert choice_is_unanswered("none", "")
+    assert not choice_is_unanswered("none", "None")
     assert choice_is_unanswered("placeholder", "")
 
     # Real options must NOT be misclassified
@@ -835,6 +838,40 @@ async def test_validator_caps_excessive_unresolved_controls():
     assert len(res.reason or "") <= 300
 
 
+@pytest.mark.asyncio
+async def test_location_autocomplete_clicks_matching_visible_option():
+    page = AsyncMock()
+    control = AsyncMock()
+    option = AsyncMock()
+    option.is_visible.return_value = True
+    option.inner_text.return_value = "Cairo, Egypt"
+    page.query_selector_all.return_value = [option]
+
+    method = await select_autocomplete_option(
+        page, control, "Cairo, Egypt", attempts=1, delay_seconds=0
+    )
+
+    assert method == "visible option"
+    option.click.assert_awaited_once()
+    control.press.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_location_autocomplete_uses_keyboard_fallback_for_combobox():
+    page = AsyncMock()
+    control = AsyncMock()
+    page.query_selector_all.return_value = []
+    control.get_attribute.side_effect = lambda name: {"role": "combobox"}.get(name)
+
+    method = await select_autocomplete_option(
+        page, control, "Cairo, Egypt", attempts=1, delay_seconds=0
+    )
+
+    assert method == "keyboard"
+    control.press.assert_any_await("ArrowDown")
+    control.press.assert_any_await("Enter")
+
+
 def test_backward_compatibility_imports():
     """Ensure all required exports remain available from jobapply.nodes.execution with exact public signatures."""
     expected_symbols = [
@@ -878,6 +915,7 @@ def test_backward_compatibility_imports():
         "resume_was_edited",
         "select_live_radio_option",
         "select_live_role_radio_option",
+        "select_autocomplete_option",
         "select_radio_option",
         "send_application_receipt",
         "skipped_update",

@@ -15,12 +15,12 @@ def _job_details(index: int, outcome: dict) -> list[str]:
     score = float(outcome.get("score") or 0.0)
     lines = [
         f"{index}. {outcome.get('title', 'Unknown title')}",
-        f"   Company: {outcome.get('company', 'Unknown company')}",
-        f"   Fit score: {score:.0%}",
-        f"   Questions answered: {outcome.get('qa_count', 0)}",
+        f"   • Company: {outcome.get('company', 'Unknown company')}",
+        f"   • Fit score: {score:.0%}",
+        f"   • Questions answered: {outcome.get('qa_count', 0)}",
     ]
     if outcome.get("url"):
-        lines.append(f"   Link: {outcome['url']}")
+        lines.append(f"   • Link: {outcome['url']}")
     return lines
 
 
@@ -54,7 +54,12 @@ def format_session_summary(state: JobApplyState) -> str:
 
     lines = [
         "📊 JOB APPLY SESSION SUMMARY",
-        f"Run ID: {run_id_str}",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "SESSION DETAILS",
+        f"• Run ID: {run_id_str}",
+        f"• Mode: {'Dry run' if state.get('dry_run') else 'Live submission'}",
+        f"• Status: {'Paused for account safety' if norm else 'Completed'}",
     ]
 
     if norm:
@@ -75,11 +80,11 @@ def format_session_summary(state: JobApplyState) -> str:
         [
             "",
             "TOTALS",
-            f"✅ Confirmed submitted: {len(submitted)}",
-            f"🧪 Dry run only (not submitted): {len(dry_runs)}",
-            f"⏭ Skipped: {len(skipped)}",
-            f"⚠️ Needs manual review: {len(manual)}",
-            f"❌ Failed: {len(failed)}",
+            f"• ✅ Confirmed submitted: {len(submitted)}",
+            f"• 🧪 Dry run only (not submitted): {len(dry_runs)}",
+            f"• ⏭ Skipped: {len(skipped)}",
+            f"• ⚠️ Needs manual review: {len(manual)}",
+            f"• ❌ Failed: {len(failed)}",
         ]
     )
 
@@ -89,19 +94,20 @@ def format_session_summary(state: JobApplyState) -> str:
     dry_run_reposts = [item for item in marked_dry_runs if item.get("is_repost")]
     reposts = [item for item in marked if item.get("is_repost")]
     pending_queue_items = list(state.get("manual_review_queue_pending") or [])
-    lines.extend(
-        [
-            "",
-            "DRY-RUN METRICS (per-outcome markers)",
-            f"🧪 Dry-run outcomes at Submit boundary (not clicked): {len(marked_dry_runs)}",
-            f"⚠️ Needs manual review: {sum(1 for i in marked if i.get('status') == 'needs_manual_review')}",
-            f"⏭ Skipped: {sum(1 for i in marked if i.get('status') == 'skipped')}",
-            f"❌ Failed: {sum(1 for i in marked if i.get('status') == 'failed')}",
-            f"🔁 Reposted dry-run outcomes: {len(dry_run_reposts)}"
-            f" (all marked outcomes: {len(reposts)})",
-            "✅ Confirmed submissions from dry runs: 0",
-        ]
-    )
+    if state.get("dry_run") or marked:
+        lines.extend(
+            [
+                "",
+                "DRY-RUN METRICS (per-outcome markers)",
+                f"• 🧪 Submit boundary reached (not clicked): {len(marked_dry_runs)}",
+                f"• ⚠️ Needs manual review: {sum(1 for i in marked if i.get('status') == 'needs_manual_review')}",
+                f"• ⏭ Skipped: {sum(1 for i in marked if i.get('status') == 'skipped')}",
+                f"• ❌ Failed: {sum(1 for i in marked if i.get('status') == 'failed')}",
+                f"• 🔁 Reposted dry-run outcomes: {len(dry_run_reposts)}"
+                f" (all marked outcomes: {len(reposts)})",
+                "• ✅ Confirmed submissions from dry runs: 0",
+            ]
+        )
 
     if pending_queue_items:
         lines.append(
@@ -152,7 +158,21 @@ def format_session_summary(state: JobApplyState) -> str:
     queries = list(state.get("search_queries") or [])
     if queries:
         completed = min(int(state.get("current_query_index", 0)) + 1, len(queries))
-        lines.extend(["", f"Search queries reached: {completed}/{len(queries)}"])
+        lines.extend(
+            [
+                "",
+                "SEARCH PROGRESS",
+                f"• Queries reached: {completed}/{len(queries)}",
+            ]
+        )
+
+    errors = [
+        sanitize_evidence_string(str(error), max_length=180)
+        for error in list(state.get("errors") or [])
+        if str(error).strip()
+    ]
+    if errors:
+        lines.extend(["", "ISSUES", *[f"• {error}" for error in errors[:5]]])
 
     if dry_runs:
         lines.extend(

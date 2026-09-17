@@ -3,6 +3,8 @@
 import hashlib
 import json
 import re
+from datetime import datetime
+from html import escape
 from typing import Any
 
 from jobapply.execution.planning import is_skip_job_reply, match_choice_index
@@ -15,6 +17,7 @@ from jobapply.utils.telegram import TelegramClient
 from jobapply.utils.telegram_storage import MAX_INLINE_ACTIONS, sanitize_inline_actions
 
 SKIP_JOB_ACTION_LABEL = "Skip Job"
+STILL_CORRECT_ACTION_LABEL = "Still correct"
 
 _question_translation_cache: dict[
     tuple[str, tuple[str, ...], str],
@@ -63,18 +66,20 @@ def format_job_question_summary(job: dict, qualification_result: dict | None) ->
         summary = summary[:597].rstrip() + "..."
 
     lines = [
-        "JOB SUMMARY",
+        "<b>🎯 QUALIFIED JOB</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
         "",
-        f"Job: {job.get('title') or 'Unknown title'}",
-        f"Company: {job.get('company') or 'Unknown company'}",
+        "<b>JOB DETAILS</b>",
+        f"• Role: {escape(str(job.get('title') or 'Unknown title'))}",
+        f"• Company: {escape(str(job.get('company') or 'Unknown company'))}",
     ]
     if job.get("location"):
-        lines.append(f"Location: {job['location']}")
+        lines.append(f"• Location: {escape(str(job['location']))}")
     if job.get("work_type"):
-        lines.append(f"Work type: {job['work_type']}")
+        lines.append(f"• Work type: {escape(str(job['work_type']))}")
     if qualification_result.get("score") is not None:
-        lines.append(f"Fit score: {float(qualification_result['score']):.0%}")
-    lines.extend(["", f"Role summary: {summary}"])
+        lines.append(f"• Fit score: {float(qualification_result['score']):.0%}")
+    lines.extend(["", "<b>WHY IT MATCHES</b>", escape(summary)])
 
     key_matches = [
         str(item).strip()
@@ -82,13 +87,18 @@ def format_job_question_summary(job: dict, qualification_result: dict | None) ->
         if str(item).strip()
     ]
     if key_matches:
-        lines.append(f"Key matches: {', '.join(key_matches[:5])}")
+        lines.extend(
+            ["", "<b>KEY MATCHES</b>", *[f"• {escape(item)}" for item in key_matches[:5]]]
+        )
     if job.get("url"):
-        lines.extend(["", f"Job link: {job['url']}"])
+        lines.extend(["", "<b>JOB LINK</b>", escape(str(job["url"]))])
     lines.extend(
         [
             "",
-            "Application questions may follow. Reply /skip to any question to skip this job.",
+            "<b>NEXT STEP</b>",
+            "The application will continue automatically.",
+            "I will message you only if a form answer is required.",
+            "Reply /skip to any question to skip this job.",
         ]
     )
     return "\n".join(lines)
@@ -242,6 +252,19 @@ Rules:
     return question_text, clean_options
 
 
+def format_application_question_message(
+    *,
+    job: dict,
+    question: str,
+    options: list[str] | None = None,
+    previous_answer: str | None = None,
+    previous_confirmed_at: datetime | None = None,
+) -> str:
+    """Return only the safely escaped question text for Telegram."""
+    del job, options, previous_answer, previous_confirmed_at
+    return f"<b>{escape(question.strip())}</b>"
+
+
 async def ask_user_for_question(
     question_text: str,
     job: dict,
@@ -254,8 +277,10 @@ async def ask_user_for_question(
     get_llm_fn: Any = get_llm,
     translate_fn: Any = None,
     extract_fn: Any = None,
+    previous_answer: str | None = None,
+    previous_confirmed_at: datetime | None = None,
 ) -> tuple[str | None, bool]:
-    """Ask on Telegram and normalize a natural reply with Gemma."""
+    """Ask on Telegram, optionally reconfirming an expired candidate fact."""
     _translate = translate_fn or (
         lambda q, opts, lang: translate_question_for_telegram(q, opts, lang, get_llm_fn=get_llm_fn)
     )
@@ -270,18 +295,29 @@ async def ask_user_for_question(
         options,
         settings.telegram_question_language,
     )
-    message = display_question
-    if display_options:
-        message += "\n\n" + "\n".join(f"- {option}" for option in display_options)
-    message += "\n\n- /skip — Skip this job"
+    message = format_application_question_message(
+        job=job,
+        question=display_question,
+        options=display_options,
+        previous_answer=previous_answer,
+        previous_confirmed_at=previous_confirmed_at,
+    )
 
     # Small bounded option lists get inline buttons plus a persistent skip
     # button; long/free-text questions keep accepting ordinary replies.
-    candidate_actions = list(display_options) + [SKIP_JOB_ACTION_LABEL]
+    candidate_actions = (
+        ([STILL_CORRECT_ACTION_LABEL] if previous_answer is not None else [])
+        + list(display_options)
+        + [SKIP_JOB_ACTION_LABEL]
+    )
     inline_actions = (
         sanitize_inline_actions(candidate_actions)
         if len(candidate_actions) <= MAX_INLINE_ACTIONS
-        else [SKIP_JOB_ACTION_LABEL]
+        else (
+            [STILL_CORRECT_ACTION_LABEL, SKIP_JOB_ACTION_LABEL]
+            if previous_answer is not None
+            else [SKIP_JOB_ACTION_LABEL]
+        )
     )
 
     safe_run_id = str(run_id or job.get("run_id") or "default_run")
@@ -315,8 +351,9 @@ async def ask_user_for_question(
             "Telegram form Q&A correlation already consumed in prior run"
         )
     else:
+        detail = escape(str(wait_res.error_reason or wait_res.status.value))[:240]
         raise FormQaInfrastructureError(
-            f"Telegram form Q&A delivery failed ({wait_res.status.value})"
+            f"Telegram form Q&A delivery failed ({wait_res.status.value}: {detail})"
         )
 
     if timed_out or reply is None:
@@ -330,9 +367,12 @@ async def ask_user_for_question(
             chosen_action = inline_actions[index]
             if chosen_action == SKIP_JOB_ACTION_LABEL:
                 raise UserSkippedJob(question_text)
+            if chosen_action == STILL_CORRECT_ACTION_LABEL and previous_answer is not None:
+                return previous_answer, False
             clean_options = [option for option in (options or []) if option]
-            if index < len(clean_options):
-                return clean_options[index], False
+            option_index = index - (1 if previous_answer is not None else 0)
+            if 0 <= option_index < len(clean_options):
+                return clean_options[option_index], False
         # Out-of-range indices cannot happen through validated storage; fall
         # back to text parsing rather than guessing an unrelated option.
         log_event(
@@ -344,6 +384,13 @@ async def ask_user_for_question(
 
     if reply_matches_skip_action(reply):
         raise UserSkippedJob(question_text)
+    if previous_answer is not None and " ".join(reply.casefold().split()) in {
+        "still correct",
+        "same",
+        "no change",
+        "unchanged",
+    }:
+        return previous_answer, False
     return (
         await _extract(
             question_text,

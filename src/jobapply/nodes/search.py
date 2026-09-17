@@ -16,6 +16,7 @@ from jobapply.utils.account_safety import (
 from jobapply.utils.browser import get_randomized_delay, managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
+    get_location_exclusion_reason,
     get_title_exclusion_reason,
 )
 from jobapply.utils.json_output import extract_json_object
@@ -350,7 +351,11 @@ async def search_node(state: JobApplyState) -> dict:
                 page = await context.new_page()
 
                 # Navigate to search results
-                response = await page.goto(search_url, wait_until="domcontentloaded")
+                response = await page.goto(
+                    search_url,
+                    wait_until="domcontentloaded",
+                    timeout=settings.linkedin_navigation_timeout_ms,
+                )
                 http_status = response.status if response else None
 
                 # Guard search navigation
@@ -604,6 +609,35 @@ async def search_node(state: JobApplyState) -> dict:
                             if location_elem
                             else "Unknown"
                         )
+
+                        location_exclusion_reason = get_location_exclusion_reason(
+                            {"location": location},
+                            settings.excluded_locations_list,
+                        )
+                        if location_exclusion_reason:
+                            log_event(
+                                "info",
+                                "search.location_excluded",
+                                f"Skipping job in excluded location {job_id}",
+                                run_id=str(state.get("run_id") or "") or None,
+                                job_id=job_id,
+                                node="search_node",
+                                details={"location": bound_text(location, 120)},
+                            )
+                            extracted_job_ids.add(job_id)
+                            updated_seen_ids.add(job_id)
+                            already_seen.add(job_id)
+                            exclusions_to_persist.append(
+                                {
+                                    "job_id": job_id,
+                                    "title": title,
+                                    "company": company,
+                                    "location": location,
+                                    "status": "not_qualified",
+                                    "reason": location_exclusion_reason,
+                                }
+                            )
+                            continue
 
                         # Non-destructive repost detection BEFORE any click or
                         # navigation, while the card is guaranteed attached:

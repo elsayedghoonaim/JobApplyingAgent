@@ -18,6 +18,33 @@ _MACHINE_LEARNING_TITLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DEFAULT_TARGET_TITLE_KEYWORDS = ("Machine Learning", "ML", "MLOps", "Deep Learning")
+_DEFAULT_EXCLUDED_LOCATIONS = (
+    "Palestine",
+    "Palastin",
+    "Palastine",
+    "State of Palestine",
+    "Palestinian Territory",
+    "Palestinian Territories",
+    "Israel",
+    "Israeli",
+    "West Bank",
+    "Gaza",
+    "Gaza Strip",
+    "Tel Aviv",
+    "Jerusalem",
+    "Haifa",
+    "Beer Sheva",
+    "Beersheba",
+    "Ashdod",
+    "Netanya",
+    "Petah Tikva",
+    "Rishon LeZion",
+    "Ramat Gan",
+    "Herzliya",
+    "فلسطين",
+    "إسرائيل",
+    "ישראל",
+)
 
 _ALLOWED_LANGUAGE_WORDS = {
     "arabic",
@@ -238,14 +265,40 @@ def find_disallowed_required_languages(
     return list(dict.fromkeys(disallowed))
 
 
+def get_location_exclusion_reason(
+    job: dict,
+    excluded_locations: Sequence[str] | None = None,
+) -> str | None:
+    """Return an exclusion reason when a job matches a configured blocked location."""
+    blocked = (
+        _DEFAULT_EXCLUDED_LOCATIONS
+        if excluded_locations is None
+        else tuple(excluded_locations)
+    )
+    patterns = [
+        pattern
+        for value in blocked
+        if (pattern := _normalized_keyword_pattern(str(value))) is not None
+    ]
+    for field_name in ("location", "parsed_location"):
+        location = str(job.get(field_name) or "").strip()
+        if location and any(pattern.search(location) for pattern in patterns):
+            return "Job location excluded by user preference"
+    return None
+
+
 def get_job_exclusion_reason(
     job: dict,
     target_keywords: Sequence[str] | None = None,
     *,
     exclude_senior_titles: bool = True,
     allowed_languages: Sequence[str] | None = None,
+    excluded_locations: Sequence[str] | None = None,
 ) -> str | None:
     """Return the first deterministic reason a job must not be processed."""
+    location_reason = get_location_exclusion_reason(job, excluded_locations)
+    if location_reason:
+        return location_reason
     title_reason = get_title_exclusion_reason(
         job.get("title"),
         target_keywords,

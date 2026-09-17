@@ -853,6 +853,38 @@ async def test_async_cancellation_writes_interrupted_summary_and_reraises(
 @patch("jobapply.main.shutdown_logging")
 @patch("jobapply.main.close_llm_client", new_callable=AsyncMock)
 @patch("jobapply.main.compile_graph")
+async def test_controller_run_cancellation_keeps_process_resources_open(
+    mock_compile_graph, mock_close_llm, mock_shutdown, mock_write_summary, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    store_cls = MagicMock()
+    store_instance = MagicMock()
+    store_instance.get_daily_count = AsyncMock(return_value=0)
+    store_cls.return_value = store_instance
+    store_cls.close = AsyncMock()
+    graph = AsyncMock()
+    graph.aget_state.return_value = _checkpoint_mock(None)
+    graph.ainvoke.side_effect = asyncio.CancelledError()
+    mock_compile_graph.return_value = graph
+
+    with patch("jobapply.main.DeduplicationStore", store_cls):
+        with pytest.raises(asyncio.CancelledError):
+            await run(
+                run_id="summary-controller-cancelled",
+                dry_run=True,
+                close_resources=False,
+            )
+
+    mock_close_llm.assert_not_awaited()
+    store_cls.close.assert_not_awaited()
+    mock_write_summary.assert_called_once()
+    mock_shutdown.assert_called_once()
+
+
+@patch("jobapply.main.write_summary")
+@patch("jobapply.main.shutdown_logging")
+@patch("jobapply.main.close_llm_client", new_callable=AsyncMock)
+@patch("jobapply.main.compile_graph")
 async def test_cancellation_takes_precedence_over_cleanup_and_publication_failures(
     mock_compile_graph, mock_close_llm, mock_shutdown, mock_write_summary, tmp_path, monkeypatch
 ):

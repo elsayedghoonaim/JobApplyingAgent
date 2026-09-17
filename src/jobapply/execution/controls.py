@@ -65,6 +65,56 @@ async def get_form_field_label(control: Any, page: Any, fallback: str = "Unknown
     return fallback
 
 
+async def select_autocomplete_option(
+    page: Any,
+    control: Any,
+    desired_value: str,
+    *,
+    attempts: int = 4,
+    delay_seconds: float = 0.2,
+) -> str | None:
+    """Select the matching option for a text-backed autocomplete control.
+
+    Autocomplete fields are incomplete after filling until a suggestion is committed.
+    Prefer a visible matching ARIA option, with a keyboard fallback for controls
+    that explicitly advertise autocomplete behavior.
+    """
+    attempt_count = max(1, attempts)
+    for attempt in range(attempt_count):
+        labels: list[str] = []
+        labelled_options: list[Any] = []
+        for option in await page.query_selector_all("[role='option']"):
+            try:
+                if not await option.is_visible():
+                    continue
+                label = (await option.inner_text()).strip()
+            except Exception:
+                continue
+            if label:
+                labels.append(label)
+                labelled_options.append(option)
+
+        matched = match_choice_index(desired_value, labels)
+        if matched is not None:
+            await labelled_options[matched].click()
+            return "visible option"
+
+        if attempt + 1 < attempt_count:
+            await asyncio.sleep(delay_seconds)
+
+    autocomplete_markers = (
+        (await control.get_attribute("role") or "").lower() == "combobox"
+        or bool(await control.get_attribute("aria-autocomplete"))
+        or (await control.get_attribute("aria-haspopup") or "").lower() == "listbox"
+        or bool(await control.get_attribute("aria-controls"))
+    )
+    if autocomplete_markers:
+        await control.press("ArrowDown")
+        await control.press("Enter")
+        return "keyboard"
+    return None
+
+
 async def get_radio_option_label(radio: Any, fieldset: Any) -> str:
     """Resolve option text from native or LinkedIn role-based radio markup."""
     aria_label = (await radio.get_attribute("aria-label") or "").strip()

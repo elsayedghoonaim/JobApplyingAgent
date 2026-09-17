@@ -3,8 +3,68 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from jobapply.models.telegram import CorrelationStatus, CorrelationWaitResult
-from jobapply.nodes.approval import approval_node
+from jobapply.nodes.approval import approval_node, format_approval_question
 from jobapply.nodes.execution import execution_node
+from jobapply.nodes.generation import generation_node
+
+
+def test_approval_question_is_structured():
+    prompt = format_approval_question(
+        {
+            "current_job": {
+                "title": "ML Engineer",
+                "company": "Acme",
+                "url": "https://example.test/job/1",
+            },
+            "qualification_result": {"score": 0.85},
+            "edit_reasoning": "Highlight production ML experience.",
+            "proposed_edits": "Add MLOps deployment bullet.",
+        }
+    )
+
+    assert prompt.startswith("<b>📝 RESUME DECISION REQUIRED</b>\n━━━━━━━━━━━━━━━━━━━━")
+    assert "<b>JOB DETAILS</b>\n• Role: ML Engineer\n• Company: Acme\n• Fit score: 85%" in prompt
+    assert "<b>JOB LINK</b>\nhttps://example.test/job/1" in prompt
+    assert "<b>WHY AN EDIT WAS SUGGESTED</b>\nHighlight production ML experience." in prompt
+    assert "<b>PROPOSED CHANGES</b>\nAdd MLOps deployment bullet." in prompt
+    assert "<b>ACTION REQUIRED</b>\n• Approve" in prompt
+
+
+@pytest.mark.asyncio
+@patch("jobapply.nodes.generation.get_cover_letter_path", return_value="cover-letter.txt")
+@patch("jobapply.nodes.generation.open", new_callable=MagicMock)
+@patch("jobapply.nodes.generation.get_cached_profile", return_value=({}, "Candidate profile"))
+@patch("jobapply.nodes.generation.get_llm")
+async def test_generation_prepares_base_resume_without_approval_or_edit_call(
+    mock_get_llm,
+    mock_profile,
+    mock_open,
+    mock_cover_path,
+):
+    llm = AsyncMock()
+    llm.ainvoke.return_value = MagicMock(content="Cover letter")
+    mock_get_llm.return_value = llm
+
+    result = await generation_node(
+        {
+            "run_id": "run-auto",
+            "current_job": {
+                "job_id": "123",
+                "title": "ML Engineer",
+                "company": "Acme",
+                "description": "Build ML systems",
+            },
+            "qualification_result": {"qualified": True, "score": 0.95},
+            "errors": [],
+        }
+    )
+
+    mock_get_llm.assert_called_once()
+    llm.ainvoke.assert_awaited_once()
+    assert result["resume_path"].endswith("resume.pdf")
+    assert result["edits_urgent"] is False
+    assert result["approval_status"] is None
+    assert result["application_status"] is None
 
 
 @pytest.mark.asyncio
