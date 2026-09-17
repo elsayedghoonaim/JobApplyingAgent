@@ -271,9 +271,7 @@ def get_location_exclusion_reason(
 ) -> str | None:
     """Return an exclusion reason when a job matches a configured blocked location."""
     blocked = (
-        _DEFAULT_EXCLUDED_LOCATIONS
-        if excluded_locations is None
-        else tuple(excluded_locations)
+        _DEFAULT_EXCLUDED_LOCATIONS if excluded_locations is None else tuple(excluded_locations)
     )
     patterns = [
         pattern

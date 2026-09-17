@@ -111,11 +111,7 @@ class SubmittedJobsReport:
             title = escape(str(metadata.get("title") or f"Job {job.get('job_id', 'unknown')}"))
             company = escape(str(metadata.get("company") or "Unknown company"))
             url = escape(str(metadata.get("url") or ""))
-            block = (
-                f"{index}. <b>{title}</b>\n"
-                f"Company: {company}\n"
-                f"Submitted: {time_label}"
-            )
+            block = f"{index}. <b>{title}</b>\nCompany: {company}\nSubmitted: {time_label}"
             if url:
                 block += f"\n{url}"
             blocks.append(block)
@@ -186,8 +182,7 @@ class TelegramControlService:
     async def send_status(self) -> None:
         status = "running" if self.is_running() else "stopped"
         await self._send(
-            f"<b>AGENT STATUS</b>\nStatus: {status}\n\n"
-            "Commands: /report · /stop · /run · /status",
+            f"<b>AGENT STATUS</b>\nStatus: {status}\n\nCommands: /report · /stop · /run · /status",
             html=True,
         )
 
@@ -220,9 +215,7 @@ class TelegramControlService:
                     node="telegram_control",
                     exc=error,
                 )
-                await self._send(
-                    "⚠️ Agent run ended with an error. Use /run to start a new run."
-                )
+                await self._send("⚠️ Agent run ended with an error. Use /run to start a new run.")
         self.workflow_task = None
 
     async def serve(self, *, start_immediately: bool = True) -> None:

@@ -152,9 +152,7 @@ async def test_report_queries_confirmed_submissions_and_formats_every_job():
     )
     report = SubmittedJobsReport(settings=settings, collection=collection)
 
-    local_now, jobs = await report.get_today(
-        datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
-    )
+    local_now, jobs = await report.get_today(datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc))
     messages = report.format_messages(local_now, jobs)
 
     assert collection.query["status"] == "submitted"

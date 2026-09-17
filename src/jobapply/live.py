@@ -43,9 +43,7 @@ def linkedin_url_is_signed_in(url: str) -> bool:
 def validate_local_configuration() -> None:
     """Fail early for missing model credentials or required application files."""
     settings = get_settings()
-    key_name = (
-        "OPENROUTER_API_KEY" if settings.llm_provider == "openrouter" else "GOOGLE_API_KEY"
-    )
+    key_name = "OPENROUTER_API_KEY" if settings.llm_provider == "openrouter" else "GOOGLE_API_KEY"
     if not os.getenv(key_name):
         raise RuntimeError(f"{key_name} is missing from .env")
     required_files = (
