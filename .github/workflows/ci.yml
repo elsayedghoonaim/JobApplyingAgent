@@ -23,6 +23,7 @@ jobs:
       TELEGRAM_BOT_TOKEN: 123456789:AAASyntheticTokenForTestsOnly
       JOBAPPLY_TELEGRAM_CHAT_ID: "12345"
       TELEGRAM_CHAT_ID: "12345"
+      JOBAPPLY_MAX_APPLICATIONS_PER_SESSION: "50"
 
     steps:
       - name: Checkout code
