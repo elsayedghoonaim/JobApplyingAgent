@@ -113,7 +113,11 @@ def classify_candidate_fact(question: str, job: dict[str, Any] | None = None) ->
         return FactIdentity("education.highest", "global")
 
     if "year" in normalized and "experience" in normalized:
-        skill = re.sub(r"\b(?:how many|number of|years?|of|professional|work|working|experience|do you have|with|in)\b", " ", normalized)
+        skill = re.sub(
+            r"\b(?:how many|number of|years?|of|professional|work|working|experience|do you have|with|in)\b",
+            " ",
+            normalized,
+        )
         return FactIdentity(f"experience.{_slug(skill)}.years", "global")
 
     if any(word in normalized for word in ("salary", "compensation", "pay", "wage")):

@@ -226,7 +226,9 @@ class TelegramClient:
             if durable_cursor is not None:
                 self._last_update_id = max(self._last_update_id or 0, durable_cursor)
             offset = 0 if self._last_update_id is None else self._last_update_id + 1
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout + 5.0, connect=5.0)) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout + 5.0, connect=5.0)
+            ) as client:
                 response = await client.post(
                     f"{self._base_url}/getUpdates",
                     json={"offset": offset, "timeout": max(0, timeout)},
@@ -602,9 +604,7 @@ class TelegramClient:
                 else None
             )
             try:
-                structured_parse_mode = (
-                    "HTML" if purpose in {"form_qa", "approval"} else None
-                )
+                structured_parse_mode = "HTML" if purpose in {"form_qa", "approval"} else None
                 if reg.inline_actions:
                     buttoned_text = self._bounded_buttoned_prompt(reg.prompt_text, reg.nonce)
                     sent_id = await self._send_single_message(
