@@ -1,6 +1,7 @@
 import os
 import socket
 import sys
+import threading
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,9 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 # On Windows, asyncio ProactorEventLoop requires internal socketpair for its self-pipe.
 # Under pytest-socket --disable-socket, socket.socket constructor is guarded.
 # Un-guard ONLY calls originating within stdlib socket.socketpair so offline asyncio loops initialize.
-_in_socketpair = False
+# The marker must be thread-local because some tests create multiple event loops concurrently.
+_socketpair_state = threading.local()
 _orig_socket = socket.socket
 _orig_disable = pytest_socket.disable_socket
+
+
+def _inside_socketpair() -> bool:
+    return bool(getattr(_socketpair_state, "active", False))
 
 
 def _patch_pytest_socket():
@@ -23,8 +29,7 @@ def _patch_pytest_socket():
 
         class OfflineSocket(guarded):
             def __new__(cls, family=-1, type=-1, proto=-1, fileno=None):
-                global _in_socketpair
-                if _in_socketpair:
+                if _inside_socketpair():
                     obj = _orig_socket.__new__(_orig_socket)
                     if fileno is not None:
                         _orig_socket.__init__(obj, family, type, proto, fileno)
@@ -34,8 +39,7 @@ def _patch_pytest_socket():
                 return guarded.__new__(guarded, family, type, proto, fileno)
 
             def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
-                global _in_socketpair
-                if _in_socketpair:
+                if _inside_socketpair():
                     return
                 super().__init__(family, type, proto, fileno)
 
@@ -51,12 +55,12 @@ _orig_socketpair = socket.socketpair
 
 
 def _safe_socketpair(family=socket.AF_INET, type=socket.SOCK_STREAM, proto=0):
-    global _in_socketpair
-    _in_socketpair = True
+    previous = _inside_socketpair()
+    _socketpair_state.active = True
     try:
         return _orig_socketpair(family, type, proto)
     finally:
-        _in_socketpair = False
+        _socketpair_state.active = previous
 
 
 socket.socketpair = _safe_socketpair
