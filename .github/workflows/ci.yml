@@ -16,7 +16,7 @@ jobs:
         python-version: ["3.11", "3.12"]
     env:
       JOBAPPLY_LLM_PROVIDER: openrouter
-      JOBAPPLY_LLM_MODEL: stealth/union-alpha
+      JOBAPPLY_LLM_MODEL: nvidia/nemotron-3-ultra-550b-a55b:free
       JOBAPPLY_LLM_BASE_URL: https://openrouter.ai/api/v1
       OPENROUTER_API_KEY: synthetic-ci-openrouter-key
       JOBAPPLY_TELEGRAM_BOT_TOKEN: 123456789:AAASyntheticTokenForTestsOnly
