@@ -11,8 +11,8 @@ from jobapply.settings import get_settings
 from jobapply.utils.browser import (
     edge_debug_ports,
     edge_profile_path,
-    get_owner_marker_path,
     get_linkedin_page,
+    get_owner_marker_path,
     get_port_listener_pids,
     is_port_free,
     launch_edge_for_jobapply,
