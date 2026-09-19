@@ -33,10 +33,18 @@ async def resolve_easy_apply_container(page: Any, timeout_ms: int) -> Any | None
     inline SDUI form, or (occasionally) inside a child frame.  Waiting only for
     the historical modal class incorrectly treats valid inline forms as failed.
     """
+    waited_container = None
     try:
-        await page.wait_for_selector(MODAL_CSS, timeout=timeout_ms)
+        waited_container = await page.wait_for_selector(MODAL_CSS, timeout=timeout_ms)
     except Exception:
         pass
+
+    if waited_container is not None:
+        try:
+            if await waited_container.is_visible():
+                return waited_container
+        except Exception:
+            pass
 
     surfaces: list[Any] = [page]
     try:
