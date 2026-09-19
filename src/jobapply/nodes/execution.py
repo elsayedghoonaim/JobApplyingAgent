@@ -831,6 +831,8 @@ async def execution_node(state: JobApplyState) -> dict:
                             },
                         )
 
+                    assert modal is not None
+
                     # Check for external redirect or assessment
                     modal_text = await modal.inner_text()
                     if "external" in modal_text.lower() or "assessment" in modal_text.lower():
