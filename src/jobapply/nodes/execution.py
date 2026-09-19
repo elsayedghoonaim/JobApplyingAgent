@@ -267,9 +267,7 @@ async def ask_user_for_question(
 
     expired_compatible_fact = (
         previous_fact
-        if previous_fact is not None
-        and previous_fact.is_expired()
-        and reusable_answer is not None
+        if previous_fact is not None and previous_fact.is_expired() and reusable_answer is not None
         else None
     )
     answer, timed_out = await _ext_ask_user_for_question(
@@ -287,9 +285,7 @@ async def ask_user_for_question(
             expired_compatible_fact.value if expired_compatible_fact is not None else None
         ),
         previous_confirmed_at=(
-            expired_compatible_fact.confirmed_at
-            if expired_compatible_fact is not None
-            else None
+            expired_compatible_fact.confirmed_at if expired_compatible_fact is not None else None
         ),
     )
     if (

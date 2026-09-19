@@ -204,14 +204,20 @@ def test_non_blocked_locations_are_not_excluded_by_location():
 
 
 def test_location_exclusions_are_configurable():
-    assert get_location_exclusion_reason(
-        {"location": "Cairo, Egypt"},
-        ["Cairo"],
-    ) == "Job location excluded by user preference"
-    assert get_location_exclusion_reason(
-        {"location": "Tel Aviv, Israel"},
-        ["Cairo"],
-    ) is None
+    assert (
+        get_location_exclusion_reason(
+            {"location": "Cairo, Egypt"},
+            ["Cairo"],
+        )
+        == "Job location excluded by user preference"
+    )
+    assert (
+        get_location_exclusion_reason(
+            {"location": "Tel Aviv, Israel"},
+            ["Cairo"],
+        )
+        is None
+    )
 
 
 def test_parsed_location_is_also_checked():

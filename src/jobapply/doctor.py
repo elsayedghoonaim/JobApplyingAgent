@@ -144,9 +144,7 @@ def check_gemma_model_constraint(settings: Optional[Any]) -> CheckResult:
     model = getattr(settings, "llm_model", "")
     base_url = getattr(settings, "llm_base_url", "")
     if provider == "gemini" and model == "gemma-4-31b-it":
-        return CheckResult(
-            "gemma-model-constraint", STATUS_PASS, "Gemini model is gemma-4-31b-it."
-        )
+        return CheckResult("gemma-model-constraint", STATUS_PASS, "Gemini model is gemma-4-31b-it.")
     if provider == "openrouter" and model.strip() and "openrouter.ai" in base_url:
         return CheckResult(
             "gemma-model-constraint",
@@ -549,9 +547,7 @@ async def check_live_google(
     api_key = os.getenv(key_name) or os.getenv(f"JOBAPPLY_{key_name}") or ""
     if not api_key.strip():
         return sanitize_check_result(
-            CheckResult(
-                "live-gemma-endpoint", STATUS_WARN, f"{key_name} not configured; skipped."
-            )
+            CheckResult("live-gemma-endpoint", STATUS_WARN, f"{key_name} not configured; skipped.")
         )
     if provider == "openrouter" and google_fn is default_google_models_check:
         google_fn = default_openrouter_models_check

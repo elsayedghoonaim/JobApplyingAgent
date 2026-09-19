@@ -87,9 +87,7 @@ def format_job_question_summary(job: dict, qualification_result: dict | None) ->
         if str(item).strip()
     ]
     if key_matches:
-        lines.extend(
-            ["", "<b>KEY MATCHES</b>", *[f"• {escape(item)}" for item in key_matches[:5]]]
-        )
+        lines.extend(["", "<b>KEY MATCHES</b>", *[f"• {escape(item)}" for item in key_matches[:5]]])
     if job.get("url"):
         lines.extend(["", "<b>JOB LINK</b>", escape(str(job["url"]))])
     lines.extend(

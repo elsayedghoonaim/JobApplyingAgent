@@ -14,6 +14,16 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+    env:
+      JOBAPPLY_LLM_PROVIDER: openrouter
+      JOBAPPLY_LLM_MODEL: stealth/union-alpha
+      JOBAPPLY_LLM_BASE_URL: https://openrouter.ai/api/v1
+      OPENROUTER_API_KEY: synthetic-ci-openrouter-key
+      JOBAPPLY_TELEGRAM_BOT_TOKEN: 123456789:AAASyntheticTokenForTestsOnly
+      TELEGRAM_BOT_TOKEN: 123456789:AAASyntheticTokenForTestsOnly
+      JOBAPPLY_TELEGRAM_CHAT_ID: "12345"
+      TELEGRAM_CHAT_ID: "12345"
+      JOBAPPLY_MAX_APPLICATIONS_PER_SESSION: "50"
 
     steps:
       - name: Checkout code
@@ -40,6 +50,12 @@ jobs:
 
       - name: Pyright type check
         run: uv run pyright
+
+      - name: Prepare deterministic test fixtures
+        shell: powershell
+        run: |
+          Copy-Item .env.example .env -Force
+          New-Item -ItemType Directory -Force outputs | Out-Null
 
       - name: Pytest suite (offline)
         run: uv run pytest -q

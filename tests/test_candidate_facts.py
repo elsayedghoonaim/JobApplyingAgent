@@ -55,9 +55,7 @@ async def test_repository_records_confirmation_and_one_year_expiry():
         update_one=AsyncMock(),
     )
     repository = CandidateFactsRepository(collection=collection, settings=memory_settings())
-    identity = classify_candidate_fact(
-        "How many years of Python experience do you have?", {}
-    )
+    identity = classify_candidate_fact("How many years of Python experience do you have?", {})
     now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
 
     await repository.remember(identity, "5", "Python years?", now=now)
@@ -95,9 +93,7 @@ def _fact(*, expired: bool) -> CandidateFact:
 @pytest.mark.asyncio
 async def test_execution_reuses_current_fact_without_telegram(monkeypatch):
     repository = _FactRepository(_fact(expired=False))
-    monkeypatch.setattr(
-        execution_module, "CandidateFactsRepository", lambda settings: repository
-    )
+    monkeypatch.setattr(execution_module, "CandidateFactsRepository", lambda settings: repository)
     telegram_ask = AsyncMock()
     monkeypatch.setattr(execution_module, "_ext_ask_user_for_question", telegram_ask)
 
@@ -117,9 +113,7 @@ async def test_execution_reuses_current_fact_without_telegram(monkeypatch):
 async def test_execution_reconfirms_expired_fact_and_renews_date(monkeypatch):
     fact = _fact(expired=True)
     repository = _FactRepository(fact)
-    monkeypatch.setattr(
-        execution_module, "CandidateFactsRepository", lambda settings: repository
-    )
+    monkeypatch.setattr(execution_module, "CandidateFactsRepository", lambda settings: repository)
     telegram_ask = AsyncMock(return_value=("Yes", False))
     monkeypatch.setattr(execution_module, "_ext_ask_user_for_question", telegram_ask)
 
