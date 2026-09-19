@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     llm_provider: Literal["gemini", "openrouter"] = "gemini"
     llm_model: str = "gemma-4-31b-it"
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    llm_fallback_models: str = "openrouter/free"
+
+    @property
+    def llm_fallback_models_list(self) -> list[str]:
+        """Return configured OpenRouter fallback model IDs in priority order."""
+        return [model.strip() for model in self.llm_fallback_models.split(",") if model.strip()]
 
     # Telegram
     telegram_bot_token: str = Field(default="")

@@ -11,13 +11,73 @@ from jobapply.utils.account_safety import (
 
 MODAL_SELECTORS: list[str] = [
     "dialog",
+    "[role='dialog']",
     ".jobs-easy-apply-modal",
     ".jobs-easy-apply-content",
+    ".jobs-easy-apply-form",
+    "form.jobs-easy-apply-form",
+    "[data-test-easy-apply-modal]",
+    "[data-test-easy-apply-content]",
+    "[data-test-easy-apply-form]",
     "div[data-test-modal]",
     ".artdeco-modal",
     "div.artdeco-modal__content",
 ]
 MODAL_CSS: str = ", ".join(MODAL_SELECTORS)
+
+
+async def resolve_easy_apply_container(page: Any, timeout_ms: int) -> Any | None:
+    """Resolve modal, inline, or framed Easy Apply form containers.
+
+    LinkedIn can render Easy Apply as an Artdeco modal, a native dialog, an
+    inline SDUI form, or (occasionally) inside a child frame.  Waiting only for
+    the historical modal class incorrectly treats valid inline forms as failed.
+    """
+    try:
+        await page.wait_for_selector(MODAL_CSS, timeout=timeout_ms)
+    except Exception:
+        pass
+
+    surfaces: list[Any] = [page]
+    try:
+        for frame in page.frames:
+            if frame not in surfaces:
+                surfaces.append(frame)
+    except (AttributeError, TypeError):
+        pass
+
+    for surface in surfaces:
+        for selector in MODAL_SELECTORS:
+            try:
+                candidates = await surface.query_selector_all(selector)
+            except Exception:
+                continue
+            for candidate in candidates:
+                try:
+                    if await candidate.is_visible():
+                        return candidate
+                except Exception:
+                    continue
+
+        # Semantic fallback for new LinkedIn markup: accept a visible form only
+        # when it has both input controls and a recognized forward/submit action.
+        try:
+            forms = await surface.query_selector_all("form")
+        except Exception:
+            forms = []
+        for form in forms:
+            try:
+                if not await form.is_visible():
+                    continue
+                controls = await form.query_selector_all(
+                    "input, select, textarea, [contenteditable='true']"
+                )
+                navigation, action, _ = await find_navigation_button(form)
+                if controls and navigation is not None and action is not None:
+                    return form
+            except Exception:
+                continue
+    return None
 
 
 def classify_navigation_action(

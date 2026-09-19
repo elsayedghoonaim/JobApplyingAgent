@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import os
 import random
@@ -10,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import psutil
 from langsmith.run_helpers import trace
@@ -22,6 +24,7 @@ from jobapply.utils.tracing import get_browser_metadata
 
 OWNER_MARKER_FILENAME = ".jobapply_browser_owner.json"
 MARKER_SCHEMA_VERSION = 1
+_LOGGER = logging.getLogger("jobapply")
 
 
 def edge_debug_ports(preferred_port: int, active_port_path: Optional[Path] = None) -> list[int]:
@@ -326,7 +329,7 @@ def launch_edge_for_jobapply(settings) -> subprocess.Popen:
         "--profile-directory=Default",
         "--no-first-run",
         "--no-default-browser-check",
-        "https://www.linkedin.com/feed/",
+        "about:blank",
     ]
 
     proc = subprocess.Popen(
@@ -352,6 +355,76 @@ def launch_edge_for_jobapply(settings) -> subprocess.Popen:
         cmdline=cmd,
     )
     return proc
+
+
+def _is_linkedin_page_url(url: str) -> bool:
+    """Return whether a browser page is already displaying LinkedIn."""
+    if not isinstance(url, str):
+        return False
+    try:
+        hostname = (urlparse(url).hostname or "").lower()
+    except (TypeError, ValueError):
+        return False
+    return hostname == "linkedin.com" or hostname.endswith(".linkedin.com")
+
+
+async def _apply_linkedin_dark_mode(context, page) -> None:
+    """Request dark website styling through media and Chromium rendering."""
+    try:
+        await page.emulate_media(color_scheme="dark")
+    except Exception as exc:
+        _LOGGER.warning("Could not set LinkedIn's dark color preference: %s", exc)
+
+    session = None
+    try:
+        session = await context.new_cdp_session(page)
+        await session.send("Emulation.setAutoDarkModeOverride", {"enabled": True})
+    except Exception as exc:
+        _LOGGER.warning("Could not enable forced dark rendering for LinkedIn: %s", exc)
+    finally:
+        if session is not None:
+            try:
+                await session.detach()
+            except Exception:
+                pass
+
+
+async def get_linkedin_page(context):
+    """Reuse the dedicated profile's LinkedIn or startup page and enable dark mode."""
+    raw_pages = getattr(context, "pages", [])
+    pages = list(raw_pages) if isinstance(raw_pages, (list, tuple)) else []
+
+    page = None
+    for candidate in pages:
+        if _is_linkedin_page_url(getattr(candidate, "url", "")):
+            page = candidate
+            break
+    if page is None:
+        for candidate in pages:
+            if getattr(candidate, "url", "") in {"", "about:blank", "edge://newtab/"}:
+                page = candidate
+                break
+    if page is None:
+        page = await context.new_page()
+
+    # Remove stale automation tabs created by older runs while preserving any
+    # unrelated pages in the dedicated browser profile.
+    for candidate in pages:
+        if candidate is page:
+            continue
+        candidate_url = getattr(candidate, "url", "")
+        if _is_linkedin_page_url(candidate_url) or candidate_url in {
+            "",
+            "about:blank",
+            "edge://newtab/",
+        }:
+            try:
+                await candidate.close()
+            except Exception as exc:
+                _LOGGER.warning("Could not close a stale JobApply browser tab: %s", exc)
+
+    await _apply_linkedin_dark_mode(context, page)
+    return page
 
 
 async def connect_to_edge(pw, port: int, profile_path: Optional[Path] = None, settings=None):

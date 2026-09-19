@@ -12,9 +12,10 @@ from jobapply.utils.account_safety import (
     classify_url,
     inspect_page_account_safety,
 )
-from jobapply.utils.browser import managed_browser
+from jobapply.utils.browser import get_linkedin_page, managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.llm import close_llm_client
+from jobapply.utils.power import keep_system_awake
 from jobapply.utils.telegram import TelegramClient
 
 SIGNIN_PATH_MARKERS = (
@@ -62,7 +63,7 @@ async def wait_for_linkedin_signin() -> None:
     """Open visible Edge and wait for the dedicated profile to be signed in."""
     settings = get_settings()
     async with managed_browser() as (_, context):
-        page = await context.new_page()
+        page = await get_linkedin_page(context)
         try:
             print("Opening Microsoft Edge and checking LinkedIn sign-in...")
             response = await page.goto(
@@ -103,7 +104,8 @@ async def wait_for_linkedin_signin() -> None:
                 await asyncio.sleep(2)
             print("LinkedIn sign-in: OK")
         finally:
-            await page.close()
+            # Keep the single working tab available to the workflow.
+            pass
 
 
 async def run_preflight() -> None:
@@ -115,6 +117,7 @@ async def run_preflight() -> None:
     await wait_for_linkedin_signin()
 
 
+@keep_system_awake
 async def run_live(
     *,
     preflight_only: bool = False,

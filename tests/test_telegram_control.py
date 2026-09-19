@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from jobapply.utils.telegram import TelegramClient, extract_control_command
@@ -92,6 +93,45 @@ async def test_controller_poll_yields_while_application_question_needs_lease(mon
 
     assert handled == 0
     repo.claim_poll_lease.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_controller_idle_read_timeout_is_not_a_poll_failure(monkeypatch):
+    repo = SimpleNamespace(
+        claim_poll_lease=AsyncMock(return_value="lease-1"),
+        get_cursor=AsyncMock(return_value=None),
+        release_poll_lease=AsyncMock(return_value=True),
+    )
+    client = TelegramClient.__new__(TelegramClient)
+    client.settings = SimpleNamespace(
+        telegram_poll_lease_seconds=30,
+        telegram_chat_id="42",
+        telegram_bot_token="test-token",
+    )
+    client.telegram_repo = repo
+    client.bot_chat_key = "bot-chat"
+    client._last_update_id = None
+    client._base_url = "https://api.telegram.test/bottest-token"
+
+    class TimeoutHttpClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, json):
+            raise httpx.ReadTimeout("idle long poll")
+
+    monkeypatch.setattr(
+        "jobapply.utils.telegram.httpx.AsyncClient",
+        lambda *args, **kwargs: TimeoutHttpClient(),
+    )
+
+    handled = await client.poll_control_commands_once(AsyncMock(), timeout=2)
+
+    assert handled == 0
+    repo.release_poll_lease.assert_awaited_once_with("bot-chat", "lease-1")
 
 
 def test_today_bounds_use_cairo_calendar_day():

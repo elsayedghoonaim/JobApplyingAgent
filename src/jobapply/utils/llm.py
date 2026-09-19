@@ -93,6 +93,7 @@ class GemmaChat:
         settings = get_settings()
         self.provider = settings.llm_provider
         self.model = settings.llm_model
+        self.fallback_models = settings.llm_fallback_models_list
         self.api_key = api_key
         self.base_url = settings.llm_base_url.rstrip("/").removesuffix("/openai")
         self.temperature = temperature
@@ -109,6 +110,9 @@ class GemmaChat:
                 "temperature": self.temperature,
                 "max_tokens": self.max_output_tokens,
             }
+            fallbacks = [model for model in self.fallback_models if model != self.model]
+            if fallbacks:
+                payload["models"] = fallbacks
             if self.response_mime_type == "application/json":
                 payload["response_format"] = {"type": "json_object"}
             headers = {
@@ -141,7 +145,17 @@ class GemmaChat:
                     extractor = (
                         _extract_openrouter_text if self.provider == "openrouter" else _extract_text
                     )
-                    return LLMResponse(content=extractor(response.json()))
+                    data = response.json()
+                    if self.provider == "openrouter" and not data.get("choices"):
+                        error = data.get("error") or {}
+                        try:
+                            embedded_status = int(error.get("code", 0))
+                        except (TypeError, ValueError):
+                            embedded_status = 0
+                        if embedded_status in (429, 500, 502, 503, 504) and attempt < 2:
+                            await asyncio.sleep(min(2.0**attempt, 8.0))
+                            continue
+                    return LLMResponse(content=extractor(data))
                 await asyncio.sleep(_retry_delay(response, attempt))
             except httpx.HTTPStatusError as exc:
                 msg = redact_string(str(exc), extra_secrets=[self.api_key])

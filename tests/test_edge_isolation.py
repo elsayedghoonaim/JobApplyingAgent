@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
 import pytest
@@ -12,6 +12,7 @@ from jobapply.utils.browser import (
     edge_debug_ports,
     edge_profile_path,
     get_owner_marker_path,
+    get_linkedin_page,
     get_port_listener_pids,
     is_port_free,
     launch_edge_for_jobapply,
@@ -19,6 +20,92 @@ from jobapply.utils.browser import (
     verify_browser_ownership,
     write_ownership_marker,
 )
+
+
+@pytest.mark.asyncio
+async def test_linkedin_page_reuses_existing_page_and_enables_dark_mode():
+    page = MagicMock()
+    page.url = "https://www.linkedin.com/feed/"
+    page.emulate_media = AsyncMock()
+    session = MagicMock()
+    session.send = AsyncMock()
+    session.detach = AsyncMock()
+    context = MagicMock()
+    context.pages = [page]
+    context.new_page = AsyncMock()
+    context.new_cdp_session = AsyncMock(return_value=session)
+
+    selected = await get_linkedin_page(context)
+
+    assert selected is page
+    context.new_page.assert_not_awaited()
+    page.emulate_media.assert_awaited_once_with(color_scheme="dark")
+    session.send.assert_awaited_once_with(
+        "Emulation.setAutoDarkModeOverride", {"enabled": True}
+    )
+    session.detach.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_linkedin_page_closes_stale_automation_tabs_only():
+    page = MagicMock()
+    page.url = "https://www.linkedin.com/feed/"
+    page.emulate_media = AsyncMock()
+    duplicate = MagicMock()
+    duplicate.url = "https://www.linkedin.com/jobs/"
+    duplicate.close = AsyncMock()
+    blank = MagicMock()
+    blank.url = "about:blank"
+    blank.close = AsyncMock()
+    unrelated = MagicMock()
+    unrelated.url = "https://example.com/"
+    unrelated.close = AsyncMock()
+    context = MagicMock()
+    context.pages = [page, duplicate, blank, unrelated]
+    context.new_page = AsyncMock()
+    context.new_cdp_session = AsyncMock(side_effect=RuntimeError("unsupported"))
+
+    selected = await get_linkedin_page(context)
+
+    assert selected is page
+    duplicate.close.assert_awaited_once()
+    blank.close.assert_awaited_once()
+    unrelated.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_linkedin_page_reuses_blank_startup_page():
+    page = MagicMock()
+    page.url = "about:blank"
+    page.emulate_media = AsyncMock()
+    context = MagicMock()
+    context.pages = [page]
+    context.new_page = AsyncMock()
+    context.new_cdp_session = AsyncMock(side_effect=RuntimeError("unsupported"))
+
+    selected = await get_linkedin_page(context)
+
+    assert selected is page
+    context.new_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_linkedin_page_closes_extra_blank_startup_tab():
+    page = MagicMock()
+    page.url = "about:blank"
+    page.emulate_media = AsyncMock()
+    extra = MagicMock()
+    extra.url = "edge://newtab/"
+    extra.close = AsyncMock()
+    context = MagicMock()
+    context.pages = [page, extra]
+    context.new_page = AsyncMock()
+    context.new_cdp_session = AsyncMock(side_effect=RuntimeError("unsupported"))
+
+    selected = await get_linkedin_page(context)
+
+    assert selected is page
+    extra.close.assert_awaited_once()
 
 
 def test_edge_debug_ports_ignores_normal_devtools_marker(tmp_path):

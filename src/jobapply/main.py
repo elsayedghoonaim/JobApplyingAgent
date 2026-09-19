@@ -25,6 +25,7 @@ from jobapply.utils.llm import close_llm_client
 from jobapply.utils.monitoring import ProgressTracker, setup_logging, shutdown_logging
 from jobapply.utils.observability import log_event
 from jobapply.utils.paths import get_run_output_dir, validate_run_id
+from jobapply.utils.power import keep_system_awake
 from jobapply.utils.redaction import redact_string
 from jobapply.utils.search_config import effective_search_params
 from jobapply.utils.summary import (
@@ -195,6 +196,7 @@ async def _read_checkpoint_state(graph, config) -> dict[str, Any] | None:
     return None
 
 
+@keep_system_awake
 async def run(
     run_id: Optional[str] = None,
     dry_run: Optional[bool] = None,

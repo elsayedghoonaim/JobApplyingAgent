@@ -227,10 +227,15 @@ class TelegramClient:
                 self._last_update_id = max(self._last_update_id or 0, durable_cursor)
             offset = 0 if self._last_update_id is None else self._last_update_id + 1
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout + 5.0, connect=5.0)) as client:
-                response = await client.post(
-                    f"{self._base_url}/getUpdates",
-                    json={"offset": offset, "timeout": max(0, timeout)},
-                )
+                try:
+                    response = await client.post(
+                        f"{self._base_url}/getUpdates",
+                        json={"offset": offset, "timeout": max(0, timeout)},
+                    )
+                except httpx.ReadTimeout:
+                    # An idle Telegram long poll can reach the local read
+                    # timeout without indicating a controller failure.
+                    return 0
                 response.raise_for_status()
                 data = response.json()
                 if not data.get("ok"):

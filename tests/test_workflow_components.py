@@ -89,8 +89,8 @@ def _base_state(**updates):
 def test_configured_llm_provider():
     settings = get_settings()
     assert settings.llm_provider == "openrouter"
-    assert settings.llm_model == "stealth/union-alpha"
-    assert get_llm().model == "stealth/union-alpha"
+    assert settings.llm_model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert get_llm().model == "nvidia/nemotron-3-ultra-550b-a55b:free"
 
 
 def test_env_has_every_documented_variable_and_no_old_provider_keys():

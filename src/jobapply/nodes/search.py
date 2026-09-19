@@ -13,7 +13,7 @@ from jobapply.utils.account_safety import (
     normalize_safety_log_payload,
     sanitize_evidence_string,
 )
-from jobapply.utils.browser import get_randomized_delay, managed_browser
+from jobapply.utils.browser import get_linkedin_page, get_randomized_delay, managed_browser
 from jobapply.utils.dedup import DeduplicationStore
 from jobapply.utils.job_filters import (
     get_location_exclusion_reason,
@@ -348,7 +348,7 @@ async def search_node(state: JobApplyState) -> dict:
                 run_type="tool",
                 metadata={"search_url": search_url, "query": query, "page": page_num},
             ) as run_tree:
-                page = await context.new_page()
+                page = await get_linkedin_page(context)
 
                 # Navigate to search results
                 response = await page.goto(

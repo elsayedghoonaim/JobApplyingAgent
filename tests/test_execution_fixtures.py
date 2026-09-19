@@ -20,6 +20,7 @@ from jobapply.execution import (
     get_form_field_label,
     get_radio_option_label,
     is_known_field,
+    resolve_easy_apply_container,
     select_autocomplete_option,
     select_live_radio_option,
     select_radio_option,
@@ -496,6 +497,42 @@ class FakePage:
 # ---------------------------------------------------------------------------
 # Fixture Unit Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inline_easy_apply_form_is_resolved_without_modal_wrapper():
+    page = FakePage(
+        """
+        <main>
+          <form data-test-easy-apply-form="true">
+            <label for="phone">Phone</label>
+            <input id="phone" value="123" />
+            <button aria-label="Review application">Review</button>
+          </form>
+        </main>
+        """
+    )
+
+    container = await resolve_easy_apply_container(page, timeout_ms=1)
+
+    assert container is not None
+    assert container.tag == "form"
+
+
+@pytest.mark.asyncio
+async def test_semantic_form_fallback_requires_controls_and_forward_action():
+    page = FakePage(
+        """
+        <main>
+          <form><input aria-label="Phone" /><button>Continue</button></form>
+        </main>
+        """
+    )
+
+    container = await resolve_easy_apply_container(page, timeout_ms=1)
+
+    assert container is not None
+    assert container.tag == "form"
 
 
 @pytest.mark.asyncio

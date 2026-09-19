@@ -37,6 +37,7 @@ from jobapply.execution import (
     is_skip_job_reply,
     manual_review_update,
     match_choice_index,
+    resolve_easy_apply_container,
     select_autocomplete_option,
     select_live_role_radio_option,
     send_application_receipt,
@@ -90,7 +91,12 @@ from jobapply.utils.account_safety import (
     inspect_page_account_safety as _default_inspect_page_account_safety,
 )
 from jobapply.utils.attempts import AttemptRepository, QuotaRepository
-from jobapply.utils.browser import get_randomized_delay, managed_browser, take_error_screenshot
+from jobapply.utils.browser import (
+    get_linkedin_page,
+    get_randomized_delay,
+    managed_browser,
+    take_error_screenshot,
+)
 from jobapply.utils.candidate_facts import (
     CandidateFactsRepository,
     resolve_answer_from_memory,
@@ -574,7 +580,7 @@ async def execution_node(state: JobApplyState) -> dict:
             metadata=get_safe_job_metadata(current_job, include_description=False),
         ) as run_tree:
             async with managed_browser() as (browser, context):
-                page = await context.new_page()
+                page = await get_linkedin_page(context)
                 log_event(
                     "info",
                     "execution.started",
@@ -713,12 +719,8 @@ async def execution_node(state: JobApplyState) -> dict:
 
                     # Wait for modal (longer timeout on first page)
                     modal_timeout = FIRST_FORM_MODAL_TIMEOUT_MS if step == 0 else 5000
-                    modal_found = False
-                    try:
-                        await page.wait_for_selector(MODAL_CSS, timeout=modal_timeout)
-                        modal_found = True
-                    except Exception:
-                        pass
+                    modal = await resolve_easy_apply_container(page, modal_timeout)
+                    modal_found = modal is not None
 
                     if not modal_found:
                         # Debug: check if an "already applied" or success message appeared
@@ -798,17 +800,40 @@ async def execution_node(state: JobApplyState) -> dict:
                         log_event(
                             "info",
                             "execution.modal_timeout",
-                            f"[LIVE] Form modal not found after {modal_timeout}ms. Ending form loop.",
+                            f"[LIVE] Easy Apply form container not found after {modal_timeout}ms.",
                             run_id=run_id,
                             job_id=job_id or None,
                             node="execution_node",
                         )
-                        break
-
-                    # Get a reference to the modal element to scope queries
-                    modal = await page.query_selector(MODAL_CSS)
-                    if not modal:
-                        modal = page  # Fallback to page if modal ref fails
+                        screenshot_path = None
+                        try:
+                            screenshot_path = await take_error_screenshot(
+                                page,
+                                state.get("run_id", ""),
+                                f"form_container_missing_{current_job.get('job_id', '')}",
+                            )
+                        except Exception as screenshot_err:
+                            log_event(
+                                "warning",
+                                "execution.modal_timeout_screenshot_failed",
+                                "Failed to capture missing-form diagnostics.",
+                                run_id=run_id,
+                                job_id=job_id or None,
+                                node="execution_node",
+                                exc=screenshot_err,
+                            )
+                        await _safe_close_page(page)
+                        return await _manual_review_update(
+                            state,
+                            "easy_apply_form_not_found",
+                            "Easy Apply was clicked, but no modal or inline application form appeared",
+                            form_qa_exchanges,
+                            extra={
+                                "job_id": job_id,
+                                "page_url": sanitize_url_for_evidence(getattr(page, "url", "")),
+                                "screenshot_path": screenshot_path,
+                            },
+                        )
 
                     # Check for external redirect or assessment
                     modal_text = await modal.inner_text()
