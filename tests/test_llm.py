@@ -51,9 +51,7 @@ async def test_openrouter_retries_embedded_provider_overload(monkeypatch):
 @pytest.mark.asyncio
 async def test_openrouter_adds_free_router_as_model_fallback(monkeypatch):
     client = AsyncMock()
-    client.post.return_value = FakeResponse(
-        {"choices": [{"message": {"content": '{"ok": true}'}}]}
-    )
+    client.post.return_value = FakeResponse({"choices": [{"message": {"content": '{"ok": true}'}}]})
     monkeypatch.setattr("jobapply.utils.llm._get_http_client", lambda: client)
 
     llm = GemmaChat(api_key="test-key", response_mime_type="application/json")
