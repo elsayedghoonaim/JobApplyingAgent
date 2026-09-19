@@ -40,6 +40,15 @@ async def resolve_easy_apply_container(page: Any, timeout_ms: int) -> Any | None
         pass
 
     if waited_container is not None:
+        # Re-resolve through the page so callers receive the actual DOM element.
+        # This also avoids propagating generic awaitable/test doubles returned by
+        # wait_for_selector while preserving the wait as the synchronization point.
+        try:
+            resolved_container = await page.query_selector(MODAL_CSS)
+        except Exception:
+            resolved_container = None
+        if resolved_container is not None:
+            return resolved_container
         try:
             if await waited_container.is_visible():
                 return waited_container
