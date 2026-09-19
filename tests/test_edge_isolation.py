@@ -40,9 +40,7 @@ async def test_linkedin_page_reuses_existing_page_and_enables_dark_mode():
     assert selected is page
     context.new_page.assert_not_awaited()
     page.emulate_media.assert_awaited_once_with(color_scheme="dark")
-    session.send.assert_awaited_once_with(
-        "Emulation.setAutoDarkModeOverride", {"enabled": True}
-    )
+    session.send.assert_awaited_once_with("Emulation.setAutoDarkModeOverride", {"enabled": True})
     session.detach.assert_awaited_once()
 
 
