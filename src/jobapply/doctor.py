@@ -151,6 +151,14 @@ def check_gemma_model_constraint(settings: Optional[Any]) -> CheckResult:
             STATUS_PASS,
             f"OpenRouter model is configured ({model[:100]}).",
         )
+    if (
+        provider == "anthropic"
+        and model.startswith("claude-")
+        and urlparse(base_url).hostname == "api.anthropic.com"
+        and urlparse(base_url).scheme == "https"
+        and urlparse(base_url).path.rstrip("/") in ("/v1", "/v1/messages")
+    ):
+        return CheckResult("gemma-model-constraint", STATUS_PASS, "Anthropic model is configured.")
     return CheckResult(
         "gemma-model-constraint",
         STATUS_FAIL,
@@ -291,7 +299,9 @@ def check_credentials_configured(settings: Optional[Any] = None) -> CheckResult:
     provider = getattr(settings, "llm_provider", None) or os.getenv(
         "JOBAPPLY_LLM_PROVIDER", "gemini"
     )
-    llm_key = "OPENROUTER_API_KEY" if provider == "openrouter" else "GOOGLE_API_KEY"
+    from jobapply.utils.llm import LLM_API_KEY_NAMES
+
+    llm_key = LLM_API_KEY_NAMES.get(provider, "GOOGLE_API_KEY")
     required = (llm_key, *REQUIRED_CREDENTIAL_KEYS)
     missing = [key for key in required if not _credential_is_configured(key)]
     if not missing:
@@ -491,6 +501,22 @@ async def default_openrouter_models_check(base_url: str, api_key: str) -> tuple[
     return False, "OpenRouter endpoint responded unexpectedly."
 
 
+async def default_anthropic_models_check(base_url: str, api_key: str) -> tuple[bool, str]:
+    """Read-only Anthropic availability probe using the models endpoint."""
+    base_url = base_url.rstrip("/").removesuffix("/messages")
+    data, error = await _bounded_http_json(
+        f"{base_url}/models",
+        method="GET",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+    )
+    if error is not None:
+        reason = error.split(":", 1)[-1].strip() or "transport_error"
+        return False, f"Anthropic endpoint unavailable ({reason})."
+    if isinstance(data, dict) and data.get("data") is not None:
+        return True, "Anthropic endpoint reachable (models list available)."
+    return False, "Anthropic endpoint responded unexpectedly."
+
+
 async def default_edge_cdp_version(port: int) -> tuple[bool, str]:
     """Read-only managed Edge CDP endpoint probe on localhost."""
     data, error = await _bounded_http_json(f"http://127.0.0.1:{port}/json/version", method="GET")
@@ -543,7 +569,9 @@ async def check_live_google(
     settings: Any, google_fn, *, timeout: float = LIVE_TIMEOUT_SECONDS
 ) -> CheckResult:
     provider = getattr(settings, "llm_provider", "gemini")
-    key_name = "OPENROUTER_API_KEY" if provider == "openrouter" else "GOOGLE_API_KEY"
+    from jobapply.utils.llm import LLM_API_KEY_NAMES
+
+    key_name = LLM_API_KEY_NAMES.get(provider, "GOOGLE_API_KEY")
     api_key = os.getenv(key_name) or os.getenv(f"JOBAPPLY_{key_name}") or ""
     if not api_key.strip():
         return sanitize_check_result(
@@ -551,6 +579,8 @@ async def check_live_google(
         )
     if provider == "openrouter" and google_fn is default_google_models_check:
         google_fn = default_openrouter_models_check
+    elif provider == "anthropic" and google_fn is default_google_models_check:
+        google_fn = default_anthropic_models_check
     return await _guarded_live_probe(
         "live-gemma-endpoint", False, google_fn, settings.llm_base_url, api_key, timeout=timeout
     )

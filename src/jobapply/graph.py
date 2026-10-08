@@ -297,6 +297,7 @@ def build_graph() -> StateGraph:
         "generation_node",
         route_after_generation,
         {
+            "select_next_job_node": "select_next_job_node",
             "execution_node": "execution_node",
             "notification_node": "notification_node",
         },

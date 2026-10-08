@@ -7,6 +7,7 @@ from datetime import datetime
 from html import escape
 from typing import Any
 
+from jobapply.execution.controls import clean_choice_option_label
 from jobapply.execution.planning import is_skip_job_reply, match_choice_index
 from jobapply.models.telegram import CorrelationStatus
 from jobapply.utils.dedup import canonicalize_job_id
@@ -113,6 +114,16 @@ async def extract_answer_from_reply(
     """Use Gemma to map a natural Telegram reply to one form-safe value."""
     options = [option for option in (options or []) if option]
     displayed_options = [option for option in (displayed_options or []) if option]
+    normalized_reply = " ".join(user_reply.casefold().split())
+    if options:
+        if normalized_reply.isdigit() and 1 <= int(normalized_reply) <= len(options):
+            return options[int(normalized_reply) - 1]
+        for index, option in enumerate(options):
+            displays = [option]
+            if len(displayed_options) == len(options):
+                displays.append(displayed_options[index])
+            if any(normalized_reply == " ".join(label.casefold().split()) for label in displays):
+                return option
     options_text = "\n".join(f"- {option}" for option in options) or "None"
     displayed_options_text = "\n".join(f"- {option}" for option in displayed_options) or "None"
     prompt = f"""Extract the user's answer for one job-application field.
@@ -142,6 +153,7 @@ Return JSON with one string field named answer."""
         llm = get_llm_fn(
             temperature=0.0,
             max_output_tokens=256,
+            thinking_enabled=False,
             response_mime_type="application/json",
             response_json_schema={
                 "type": "object",
@@ -207,6 +219,7 @@ Rules:
         llm = get_llm_fn(
             temperature=0.0,
             max_output_tokens=512,
+            thinking_enabled=False,
             response_mime_type="application/json",
             response_json_schema={
                 "type": "object",
@@ -223,7 +236,8 @@ Rules:
         response = await llm.ainvoke(prompt)
         translated = extract_json_object(response.content)
         translated_question = str(translated.get("question") or "").strip()
-        translated_options = [str(option).strip() for option in translated.get("options", [])]
+        translated_options = [clean_choice_option_label(translated_question, str(option))
+                              for option in translated.get("options", [])]
         if (
             translated_question
             and len(translated_options) == len(clean_options)
@@ -357,6 +371,26 @@ async def ask_user_for_question(
     if timed_out or reply is None:
         return None, True
 
+    async def mark_answer(answer: str, option_index: int | None = None) -> tuple[str, bool]:
+        if option_index is None and options:
+            normalized = " ".join(answer.casefold().split())
+            option_index = next((i for i, option in enumerate(options)
+                                 if " ".join(option.casefold().split()) == normalized), None)
+        if options and option_index is None:
+            return answer, False
+        lines = [f"<b>{escape(display_question[:300])}</b>", ""]
+        if option_index is not None and len(display_options) == len(options or []) and len(display_options) <= 8:
+            lines += [f"{'✅' if i == option_index else '○'} {escape(option[:40])}"
+                      for i, option in enumerate(display_options)]
+        else:
+            lines.append(f"✅ Answer: {escape(answer[:250])}")
+        try:
+            await telegram.mark_question_answer(corr_key, "\n".join(lines))
+        except Exception as exc:
+            log_event("warning", "telegram_qa.answer_mark_failed",
+                      "Could not mark the answer in Telegram.", exc=exc)
+        return answer, False
+
     # Callback presses carry their exact persisted option index: identity comes
     # from the durable action list, never from the rendered/truncated label.
     if wait_res.reply_kind == "callback" and wait_res.reply_option_index is not None:
@@ -366,11 +400,11 @@ async def ask_user_for_question(
             if chosen_action == SKIP_JOB_ACTION_LABEL:
                 raise UserSkippedJob(question_text)
             if chosen_action == STILL_CORRECT_ACTION_LABEL and previous_answer is not None:
-                return previous_answer, False
+                return await mark_answer(previous_answer)
             clean_options = [option for option in (options or []) if option]
             option_index = index - (1 if previous_answer is not None else 0)
             if 0 <= option_index < len(clean_options):
-                return clean_options[option_index], False
+                return await mark_answer(clean_options[option_index], option_index)
         # Out-of-range indices cannot happen through validated storage; fall
         # back to text parsing rather than guessing an unrelated option.
         log_event(
@@ -388,13 +422,6 @@ async def ask_user_for_question(
         "no change",
         "unchanged",
     }:
-        return previous_answer, False
-    return (
-        await _extract(
-            question_text,
-            reply,
-            options,
-            display_options,
-        ),
-        False,
-    )
+        return await mark_answer(previous_answer)
+    answer = await _extract(question_text, reply, options, display_options)
+    return await mark_answer(answer)

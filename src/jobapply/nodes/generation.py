@@ -5,6 +5,7 @@ from langsmith.run_helpers import trace
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.llm import get_llm
+from jobapply.utils.observability import bound_text, log_event
 from jobapply.utils.paths import get_cover_letter_path
 from jobapply.utils.prompts import get_cover_letter_prompt
 from jobapply.utils.redaction import redact_string
@@ -57,7 +58,7 @@ async def generation_node(state: JobApplyState) -> dict:
         errors.append(f"Profile load failed for generation: {redact_string(str(e))}")
 
     try:
-        llm = get_llm(temperature=0.4, max_output_tokens=768)
+        llm = get_llm(temperature=0.4, max_output_tokens=2048, thinking_enabled=False)
         cover_letter_prompt = get_cover_letter_prompt(
             profile_text,
             current_job,
@@ -89,6 +90,11 @@ async def generation_node(state: JobApplyState) -> dict:
                 run_tree.metadata["cover_letter_length"] = len(cover_letter_text)
     except Exception as e:
         error_msg = f"Cover letter generation failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
+        log_event(
+            "error", "generation.failed", bound_text(error_msg),
+            run_id=str(state.get("run_id") or "") or None,
+            job_id=current_job.get("job_id"), node="generation_node", exc=e,
+        )
         errors.append(error_msg)
         updates["application_status"] = "failed"
         updates["application_error"] = error_msg

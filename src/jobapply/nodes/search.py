@@ -4,6 +4,7 @@ import asyncio
 import re
 
 from langsmith.run_helpers import trace
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
@@ -263,6 +264,31 @@ async def parse_job_description(raw_description: str) -> dict:
         }
 
 
+JOB_CARD_SELECTOR = "li[data-occludable-job-id]"
+EMPTY_RESULTS_SELECTOR = ".jobs-search-no-results-banner, .jobs-search-no-results__title"
+
+
+async def wait_for_search_results(page, *, timeout_ms: int) -> bool:
+    """Wait for rendered cards or an explicit empty banner; timeout is a failure."""
+    try:
+        await page.wait_for_selector(
+            f"{JOB_CARD_SELECTOR}, {EMPTY_RESULTS_SELECTOR}",
+            state="visible",
+            timeout=timeout_ms,
+        )
+    except PlaywrightTimeoutError:
+        await guard_page_account_safety(page, stage="search_results_wait")
+        raise RuntimeError(
+            f"Search results did not finish loading within {timeout_ms / 1000:g}s; "
+            "the query was not marked exhausted."
+        ) from None
+    if await page.query_selector_all(JOB_CARD_SELECTOR):
+        return True
+    if await page.query_selector(EMPTY_RESULTS_SELECTOR):
+        return False
+    raise RuntimeError("Search results changed before extraction; the query was not marked exhausted.")
+
+
 async def get_loaded_card_ids(page) -> list[str]:
     """Retrieve all rendered job card IDs currently in the DOM without swallowing exceptions."""
     cards = await page.query_selector_all("li[data-occludable-job-id]")
@@ -363,24 +389,13 @@ async def search_node(state: JobApplyState) -> dict:
                     page, stage="search_navigation", http_status=http_status
                 )
 
-                # Wait for job cards to load
-                try:
-                    await page.wait_for_selector(
-                        ".scaffold-layout__list", timeout=settings.job_load_timeout_ms
-                    )
-                    await page.wait_for_selector(
-                        "li[data-occludable-job-id]", timeout=settings.job_load_timeout_ms
-                    )
-
-                    # Adaptively scroll to load lazy-loaded cards
-                    await load_search_cards_adaptively(
-                        page,
-                        max_scroll_rounds=settings.search_max_scroll_rounds,
-                        stability_rounds=settings.search_card_stability_rounds,
-                        scroll_delay_seconds=settings.search_scroll_delay_seconds,
-                    )
-                except Exception:
-                    # No results found
+                # DOMContentLoaded does not mean LinkedIn's async results are ready.
+                has_results = await wait_for_search_results(
+                    page, timeout_ms=settings.linkedin_navigation_timeout_ms
+                )
+                if not has_results:
+                    await page.close()
+                    # Only an explicit empty-results banner exhausts the query.
                     log_event(
                         "info",
                         "search.no_results",
@@ -401,6 +416,14 @@ async def search_node(state: JobApplyState) -> dict:
                         "logs": list(state.get("logs") or [])
                         + [f"No results for query '{query}' page {page_num}"],
                     }
+
+                # Scrolling failures are infrastructure errors, never proof of empty results.
+                await load_search_cards_adaptively(
+                    page,
+                    max_scroll_rounds=settings.search_max_scroll_rounds,
+                    stability_rounds=settings.search_card_stability_rounds,
+                    scroll_delay_seconds=settings.search_scroll_delay_seconds,
+                )
 
                 # Extract all job cards on the page without arbitrary truncation
                 job_cards = await page.query_selector_all("li[data-occludable-job-id]")
@@ -775,6 +798,11 @@ async def search_node(state: JobApplyState) -> dict:
             pass
         return _account_safety_search_update(state, safety_err.detection)
     except Exception as e:
+        try:
+            if page is not None:
+                await page.close()
+        except Exception:
+            pass
         error_msg = f"Search failed for '{query}' page {page_num}: {str(e)}"
         log_event(
             "error",
@@ -790,6 +818,7 @@ async def search_node(state: JobApplyState) -> dict:
             "current_job_index": 0,
             "current_job": None,
             "search_failed": True,
+            "query_exhausted": False,
             "seen_job_ids": set(state.get("seen_job_ids") or set()),
             "errors": list(state.get("errors") or []) + [error_msg],
             "logs": list(state.get("logs") or []) + [error_msg],

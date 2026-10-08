@@ -104,6 +104,9 @@ def test_env_has_every_documented_variable_and_no_old_provider_keys():
     actual = keys(".env")
     expected = keys(".env.example")
     assert expected <= actual
+    assert "JOBAPPLY_LLM_FALLBACK_MODELS" not in actual
+    assert "JOBAPPLY_LLM_MODEL" not in actual
+    assert "JOBAPPLY_LLM_BASE_URL" not in actual
     assert not any(
         marker in key
         for key in actual
@@ -489,10 +492,12 @@ async def test_live_radio_selection_re_resolves_after_detached_element(mock_sele
     second_legend.inner_text.return_value = "RAG experience?*"
 
     first_radio = AsyncMock()
-    first_radio.get_attribute.return_value = "Yes"
+    first_radio.get_attribute.side_effect = lambda name: "Yes" if name == "aria-label" else None
+    first_radio.evaluate.return_value = ""
     first_radio.is_checked.return_value = False
     second_radio = AsyncMock()
-    second_radio.get_attribute.return_value = "Yes"
+    second_radio.get_attribute.side_effect = lambda name: "Yes" if name == "aria-label" else None
+    second_radio.evaluate.return_value = ""
     second_radio.is_checked.return_value = False
 
     first_fieldset = AsyncMock()

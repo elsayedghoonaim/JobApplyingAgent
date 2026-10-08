@@ -38,16 +38,24 @@ class Settings(BaseSettings):
     mongodb_db: str = "jobapply"
 
     # Gemini uses the native generateContent API; OpenRouter uses its
-    # OpenAI-compatible chat completions API.
-    llm_provider: Literal["gemini", "openrouter"] = "gemini"
-    llm_model: str = "gemma-4-31b-it"
-    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
-    llm_fallback_models: str = "openrouter/free"
+    # OpenAI-compatible chat completions API; Anthropic uses the Messages API.
+    llm_provider: Literal["gemini", "openrouter", "anthropic"] = "gemini"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    gemini_model: str = "gemma-4-31b-it"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "openrouter/free"
+    anthropic_base_url: str = "https://api.anthropic.com/v1"
+    anthropic_model: str = ""
 
     @property
-    def llm_fallback_models_list(self) -> list[str]:
-        """Return configured OpenRouter fallback model IDs in priority order."""
-        return [model.strip() for model in self.llm_fallback_models.split(",") if model.strip()]
+    def llm_model(self) -> str:
+        """Return the selected provider's model."""
+        return getattr(self, f"{self.llm_provider}_model")
+
+    @property
+    def llm_base_url(self) -> str:
+        """Return the selected provider's API base URL."""
+        return getattr(self, f"{self.llm_provider}_base_url")
 
     # Telegram
     telegram_bot_token: str = Field(default="")

@@ -14,7 +14,7 @@ from jobapply.utils.job_filters import (
 )
 from jobapply.utils.json_output import extract_json_object
 from jobapply.utils.llm import get_llm
-from jobapply.utils.observability import log_event
+from jobapply.utils.observability import bound_text, log_event
 from jobapply.utils.prompts import get_qualification_prompt, truncate_head_tail
 from jobapply.utils.source_cache import get_cached_profile
 from jobapply.utils.tracing import get_qualification_metadata, get_safe_job_metadata
@@ -127,14 +127,13 @@ async def qualification_node(state: JobApplyState) -> dict:
     prompt = get_qualification_prompt(profile_text, current_job)
 
     # Call LLM with combined structured output and 4096 token output budget
-    llm = get_llm(
-        temperature=0.2,
-        max_output_tokens=4096,
-        response_mime_type="application/json",
-        response_json_schema=CombinedJobAnalysis.model_json_schema(),
-    )
-
     try:
+        llm = get_llm(
+            temperature=0.2,
+            max_output_tokens=4096,
+            response_mime_type="application/json",
+            response_json_schema=CombinedJobAnalysis.model_json_schema(),
+        )
         async with trace(
             "llm_qualification_scoring",
             run_type="chain",
@@ -348,12 +347,13 @@ async def qualification_node(state: JobApplyState) -> dict:
         }
 
     except Exception as e:
-        error_msg = f"Qualification error for {current_job.get('title', 'unknown')}: {str(e)}"
+        error_detail = bound_text(e, 300)
+        error_msg = f"Qualification error for {current_job.get('title', 'unknown')}: {error_detail}"
         jobs_evaluated = state.get("jobs_evaluated_count", 0) + 1
         log_event(
             "error",
             "qualification.failed",
-            f"❌ ERROR during qualification: {current_job.get('title', 'unknown')}",
+            f"❌ ERROR during qualification: {current_job.get('title', 'unknown')} — {error_detail}",
             run_id=str(state.get("run_id") or "") or None,
             job_id=current_job.get("job_id"),
             node="qualification_node",
@@ -364,11 +364,11 @@ async def qualification_node(state: JobApplyState) -> dict:
             "qualification_result": {
                 "qualified": False,
                 "score": 0.0,
-                "reasoning": f"Evaluation failed: {str(e)}",
+                "reasoning": f"Evaluation failed: {error_detail}",
                 "key_matches": [],
                 "gaps": [],
             },
             "seen_job_ids": set(state.get("seen_job_ids") or set()),
             "jobs_evaluated_count": jobs_evaluated,
-            "errors": list(state.get("errors") or []) + [error_msg],
+            "errors": errors + [error_msg],
         }

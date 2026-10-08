@@ -158,6 +158,28 @@ class TelegramClient:
                 run_tree.metadata["chunks_sent"] = len(chunks)
             return message_id
 
+    async def mark_question_answer(self, correlation_key: str, text: str) -> bool:
+        """Mark the answered prompt and remove its buttons without changing stored replies."""
+        try:
+            corr = await self.telegram_repo.get_correlation(correlation_key)
+            if corr is None or corr.prompt_message_id is None:
+                return False
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(f"{self._base_url}/editMessageText", json={
+                    "chat_id": self.settings.telegram_chat_id,
+                    "message_id": corr.prompt_message_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "reply_markup": {"inline_keyboard": []},
+                })
+                response.raise_for_status()
+                data = response.json()
+                return bool(data.get("ok")) or "message is not modified" in str(data.get("description", ""))
+        except Exception as exc:
+            log_event("warning", "telegram.answer_mark_failed",
+                      "Could not update the answered question in Telegram.", exc=exc)
+            return False
+
     async def _send_single_message(
         self, text: str, parse_mode: str | None, reply_markup: dict | None = None
     ) -> int | None:

@@ -1,7 +1,7 @@
 # JobApply
 
-Autonomous, checkpointed LinkedIn Easy Apply workflow with selectable Gemini
-or OpenRouter LLM access. The agent searches recent Easy Apply jobs, evaluates fit,
+Autonomous, checkpointed LinkedIn Easy Apply workflow with selectable Gemini,
+OpenRouter, or Anthropic LLM access. The agent searches recent Easy Apply jobs, evaluates fit,
 generates application documents, requests Telegram answers when needed, and
 uses an existing signed-in Microsoft Edge session.
 
@@ -20,7 +20,7 @@ uses an existing signed-in Microsoft Edge session.
 - Python 3.11+ with `uv`
 - MongoDB on `mongodb://localhost:27017`
 - Microsoft Edge
-- A Google Gemini or OpenRouter API key
+- A Google Gemini, OpenRouter, or Anthropic API key
 - Telegram bot and chat ID
 
 ## Installation
@@ -47,16 +47,32 @@ Copy-Item templates\* user-data\
 Fill every required value in `.env`. The LLM settings are:
 
 ```env
+# LLM provider: gemini, openrouter, or anthropic
 JOBAPPLY_LLM_PROVIDER=gemini
+
+# Gemini
 GOOGLE_API_KEY=...
+JOBAPPLY_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+JOBAPPLY_GEMINI_MODEL=gemma-4-31b-it
+
+# OpenRouter
 OPENROUTER_API_KEY=...
-JOBAPPLY_LLM_MODEL=gemma-4-31b-it
-JOBAPPLY_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta
-JOBAPPLY_DATA_DIR=user-data
+JOBAPPLY_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+JOBAPPLY_OPENROUTER_MODEL=openrouter/free
+
+# Anthropic
+ANTHROPIC_API_KEY=...
+JOBAPPLY_ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
+# Set a Claude model ID available to your account before selecting Anthropic.
+JOBAPPLY_ANTHROPIC_MODEL=
 ```
 
-Set `JOBAPPLY_LLM_PROVIDER` to `gemini` or `openrouter`, then set its matching
-API key, model slug, and base URL.
+Set `JOBAPPLY_LLM_PROVIDER` to `gemini`, `openrouter`, or `anthropic`.
+The app automatically uses that provider's key, base URL, and model settings.
+For Anthropic, choose a Claude model ID available to your account.
+Anthropic uses the [Messages API](https://platform.claude.com/docs/en/api/messages/create);
+JSON requests use a system instruction with the supplied schema, followed by the
+workflow's existing JSON parsing and validation.
 `JOBAPPLY_DATA_DIR` defaults to `user-data` and points to the repository-local or absolute directory containing `profile.yaml`, `resume.md`, and `resume.pdf`.
 
 ## User Data & Templates

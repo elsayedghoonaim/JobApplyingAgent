@@ -44,8 +44,10 @@ def linkedin_url_is_signed_in(url: str) -> bool:
 def validate_local_configuration() -> None:
     """Fail early for missing model credentials or required application files."""
     settings = get_settings()
-    key_name = "OPENROUTER_API_KEY" if settings.llm_provider == "openrouter" else "GOOGLE_API_KEY"
-    if not os.getenv(key_name):
+    from jobapply.utils.llm import LLM_API_KEY_NAMES
+
+    key_name = LLM_API_KEY_NAMES[settings.llm_provider]
+    if not (os.getenv(key_name) or os.getenv(f"JOBAPPLY_{key_name}") or "").strip():
         raise RuntimeError(f"{key_name} is missing from .env")
     required_files = (
         Path(settings.resolve_data_path("profile.yaml")),

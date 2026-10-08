@@ -22,9 +22,17 @@ async def get_choice_label(control: Any, page: Any, fallback: str = "Choice ques
     try:
         label = await control.evaluate(
             r"""el => {
+                const wrappingLabel = el.closest('label');
+                if (wrappingLabel?.innerText?.trim()) return wrappingLabel.innerText.trim();
+                const roleOption = el.closest('[role="radio"]');
+                if (roleOption?.innerText?.trim()) return roleOption.innerText.trim();
+                const group = el.closest('fieldset, [role="radiogroup"]');
+                const groupIds = new Set((group?.getAttribute('aria-labelledby') || '').split(/\s+/));
                 const labelled = (el.getAttribute('aria-labelledby') || '')
-                    .split(/\s+/).filter(Boolean)
-                    .map(id => document.getElementById(id)?.innerText || '')
+                    .split(/\s+/).filter(id => id && !groupIds.has(id))
+                    .map(id => document.getElementById(id))
+                    .filter(node => node && node.tagName !== "LEGEND" && !node.contains(el))
+                    .map(node => node.innerText || '')
                     .join(' ').trim();
                 if (labelled) return labelled;
                 if (el.id) {
@@ -117,10 +125,6 @@ async def select_autocomplete_option(
 
 async def get_radio_option_label(radio: Any, fieldset: Any) -> str:
     """Resolve option text from native or LinkedIn role-based radio markup."""
-    aria_label = (await radio.get_attribute("aria-label") or "").strip()
-    if aria_label:
-        return aria_label
-
     radio_id = await radio.get_attribute("id")
     if radio_id:
         try:
@@ -135,16 +139,18 @@ async def get_radio_option_label(radio: Any, fieldset: Any) -> str:
     try:
         label = await radio.evaluate(
             r"""el => {
-                const labelled = (el.getAttribute('aria-labelledby') || '')
-                    .split(/\s+/).filter(Boolean)
-                    .map(id => document.getElementById(id)?.innerText || '')
-                    .join(' ').trim();
-                if (labelled) return labelled;
-                const roleOption = el.closest('[role="radio"]');
-                if (roleOption?.innerText?.trim()) return roleOption.innerText.trim();
                 const wrappingLabel = el.closest('label');
                 if (wrappingLabel?.innerText?.trim()) return wrappingLabel.innerText.trim();
-                return (el.parentElement?.innerText || '').trim();
+                const roleOption = el.closest('[role="radio"]');
+                if (roleOption?.innerText?.trim()) return roleOption.innerText.trim();
+                const group = el.closest('fieldset, [role="radiogroup"]');
+                const groupIds = new Set((group?.getAttribute('aria-labelledby') || '').split(/\s+/));
+                const labelled = (el.getAttribute('aria-labelledby') || '')
+                    .split(/\s+/).filter(id => id && !groupIds.has(id))
+                    .map(id => document.getElementById(id))
+                    .filter(node => node && node.tagName !== 'LEGEND' && !node.contains(el))
+                    .map(node => node.innerText || '').join(' ').trim();
+                return labelled;
             }"""
         )
         if label:
@@ -152,7 +158,28 @@ async def get_radio_option_label(radio: Any, fieldset: Any) -> str:
     except Exception:
         pass
 
-    return (await radio.get_attribute("value") or "").strip()
+    aria_label = (await radio.get_attribute("aria-label") or "").strip()
+    return aria_label or (await radio.get_attribute("value") or "").strip()
+
+
+def clean_choice_option_label(question: str, label: str) -> str:
+    """Remove a repeated question prefix from an accessible option label."""
+    question = " ".join(question.split()).rstrip(" *")
+    label = " ".join(label.split())
+    if question and label.casefold().startswith(question.casefold()):
+        suffix = label[len(question):]
+        if not suffix or suffix[0].isspace() or suffix[0] in ":*-–—":
+            return suffix.lstrip(" :*-–—")
+    return label
+
+
+async def get_role_radio_option_label(option: Any, question: str) -> str:
+    """Prefer the visible ARIA option over accessibility text containing the question."""
+    visible = (await option.inner_text()).strip()
+    label = clean_choice_option_label(question, visible)
+    if label:
+        return label
+    return clean_choice_option_label(question, await option.get_attribute("aria-label") or "")
 
 
 async def _fieldset_question_text(fieldset: Any, page: Any) -> str:
@@ -223,7 +250,8 @@ async def select_live_radio_option(
                 if _normalized_choice_text(current_question) != normalized_question:
                     continue
                 radios = await fieldset.query_selector_all("input[type='radio']")
-                labels = [await get_radio_option_label(radio, fieldset) for radio in radios]
+                labels = [clean_choice_option_label(question_text, await get_radio_option_label(radio, fieldset))
+                          for radio in radios]
                 matched = match_choice_index(option_text, labels)
                 if matched is None:
                     raise RuntimeError(
@@ -266,8 +294,7 @@ async def select_live_role_radio_option(
                 role_options = await group.query_selector_all("[role='radio']")
                 labels = []
                 for option in role_options:
-                    label = await option.get_attribute("aria-label")
-                    labels.append(label or (await option.inner_text()).strip())
+                    labels.append(await get_role_radio_option_label(option, question_text))
                 matched = match_choice_index(option_text, labels)
                 if matched is None:
                     raise RuntimeError(

@@ -181,7 +181,7 @@ async def test_invalid_settings_skip_dependent_checks_as_warn():
 def test_gemini_constraint_fails_for_other_models(tmp_path):
     fake = _offline_settings(tmp_path)
     fake.llm_provider = "gemini"
-    fake.llm_model = "not-gemma"
+    fake.gemini_model = "not-gemma"
     result = check_gemma_model_constraint(fake)
     assert result.status == STATUS_FAIL
 
