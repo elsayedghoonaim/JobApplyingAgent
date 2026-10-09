@@ -1,4 +1,5 @@
 """Regression checks for slow LinkedIn results and qualification failures."""
+
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
@@ -78,6 +79,7 @@ async def test_qualification_configuration_failure_is_caught(monkeypatch):
     from jobapply.nodes.qualification import qualification_node
 
     monkeypatch.setattr("jobapply.nodes.qualification.get_cached_profile", lambda: ({}, "profile"))
+
     def fail(**kwargs):
         raise RuntimeError("ANTHROPIC_API_KEY is missing")
     monkeypatch.setattr("jobapply.nodes.qualification.get_llm", fail)
