@@ -46,7 +46,7 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Ruff lint check
-        run: uv run ruff check .
+        run: uv run ruff check --diff .
 
       - name: Pyright type check
         run: uv run pyright
