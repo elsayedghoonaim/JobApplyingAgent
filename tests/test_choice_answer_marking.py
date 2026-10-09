@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from jobapply.nodes.execution import get_radio_option_label
 from jobapply.execution.controls import clean_choice_option_label, get_role_radio_option_label
 from jobapply.execution.telegram_qa import ask_user_for_question, extract_answer_from_reply
 from jobapply.models.telegram import CorrelationStatus, CorrelationWaitResult
+from jobapply.nodes.execution import get_radio_option_label
 from jobapply.utils.telegram import TelegramClient
 
 
