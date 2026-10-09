@@ -91,9 +91,7 @@ def _extract_anthropic_text(data: dict[str, Any]) -> str:
     if data.get("stop_reason") == "max_tokens":
         raise RuntimeError("Anthropic response exceeded max_output_tokens")
     text = "\n".join(
-        part.get("text", "")
-        for part in data.get("content") or []
-        if part.get("type") == "text"
+        part.get("text", "") for part in data.get("content") or [] if part.get("type") == "text"
     ).strip()
     if not text:
         raise RuntimeError("Anthropic returned an empty response")
@@ -115,7 +113,9 @@ class GemmaChat:
         settings = get_settings()
         self.provider = settings.llm_provider
         self.provider_name = {
-            "gemini": "Gemini", "openrouter": "OpenRouter", "anthropic": "Anthropic"
+            "gemini": "Gemini",
+            "openrouter": "OpenRouter",
+            "anthropic": "Anthropic",
         }[self.provider]
         self.model = settings.llm_model
         self.api_key = api_key
@@ -207,7 +207,9 @@ class GemmaChat:
                 msg = redact_string(str(exc), extra_secrets=[self.api_key])
                 try:
                     error = exc.response.json().get("error", {})
-                    detail = str(error.get("message", "")) if isinstance(error, dict) else str(error)
+                    detail = (
+                        str(error.get("message", "")) if isinstance(error, dict) else str(error)
+                    )
                     detail = redact_string(detail, extra_secrets=[self.api_key])[:300]
                     if detail:
                         msg += f" | {detail}"
@@ -240,7 +242,9 @@ def get_llm(
     if not api_key:
         raise RuntimeError(f"{settings.llm_provider} requires {key_name} to be set")
     if not settings.llm_model.strip():
-        raise RuntimeError(f"{settings.llm_provider} requires JOBAPPLY_{settings.llm_provider.upper()}_MODEL to be set")
+        raise RuntimeError(
+            f"{settings.llm_provider} requires JOBAPPLY_{settings.llm_provider.upper()}_MODEL to be set"
+        )
     return GemmaChat(
         api_key=api_key,
         temperature=temperature,

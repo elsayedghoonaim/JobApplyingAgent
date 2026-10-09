@@ -24,8 +24,11 @@ class FakeResponse:
 def openrouter_settings(monkeypatch):
     from jobapply.settings import Settings
 
-    settings = Settings(_env_file=None, llm_provider="openrouter",
-                        openrouter_model="nvidia/nemotron-3-ultra-550b-a55b:free")
+    settings = Settings(
+        _env_file=None,
+        llm_provider="openrouter",
+        openrouter_model="nvidia/nemotron-3-ultra-550b-a55b:free",
+    )
     monkeypatch.setattr("jobapply.utils.llm.get_settings", lambda: settings)
     return settings
 
@@ -89,11 +92,16 @@ def anthropic_settings(monkeypatch):
 @pytest.mark.asyncio
 async def test_anthropic_routes_messages_and_extracts_only_text(monkeypatch, anthropic_settings):
     client = AsyncMock()
-    client.post.return_value = FakeResponse({"content": [
-        {"type": "thinking", "thinking": "private reasoning"},
-        {"type": "text", "text": "hello"},
-        {"type": "text", "text": "world"},
-    ], "stop_reason": "end_turn"})
+    client.post.return_value = FakeResponse(
+        {
+            "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "text", "text": "hello"},
+                {"type": "text", "text": "world"},
+            ],
+            "stop_reason": "end_turn",
+        }
+    )
     monkeypatch.setattr("jobapply.utils.llm._get_http_client", lambda: client)
     llm = GemmaChat(api_key="synthetic-key", max_output_tokens=256)
     response = await llm.ainvoke("hello Claude")
@@ -118,7 +126,9 @@ async def test_anthropic_json_schema_and_full_endpoint(monkeypatch, anthropic_se
     client.post.return_value = FakeResponse({"content": [{"type": "text", "text": '{"ok": true}'}]})
     monkeypatch.setattr("jobapply.utils.llm._get_http_client", lambda: client)
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
-    llm = GemmaChat(api_key="test-key", response_mime_type="application/json", response_json_schema=schema)
+    llm = GemmaChat(
+        api_key="test-key", response_mime_type="application/json", response_json_schema=schema
+    )
     assert (await llm.ainvoke("return JSON")).content == '{"ok": true}'
     args = client.post.await_args
     assert args.args[0] == "https://api.anthropic.com/v1/messages"
@@ -142,11 +152,14 @@ async def test_anthropic_retries_overload(monkeypatch, anthropic_settings):
     sleep.assert_awaited_once_with(1.0)
 
 
-@pytest.mark.parametrize("data", [
-    {"content": []},
-    {"content": [{"type": "thinking", "thinking": "hidden"}]},
-    {"content": [{"type": "text", "text": "partial"}], "stop_reason": "max_tokens"},
-])
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"content": []},
+        {"content": [{"type": "thinking", "thinking": "hidden"}]},
+        {"content": [{"type": "text", "text": "partial"}], "stop_reason": "max_tokens"},
+    ],
+)
 def test_anthropic_rejects_empty_or_truncated_response(data):
     from jobapply.utils.llm import _extract_anthropic_text
 
@@ -176,7 +189,9 @@ def test_anthropic_doctor_and_secret_redaction(monkeypatch, anthropic_settings):
     assert "ANTHROPIC_API_KEY" in check_credentials_configured(anthropic_settings).detail
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-anthropic-secret")
     assert "synthetic-anthropic-secret" not in redact_string("key: synthetic-anthropic-secret")
-    assert "synthetic-anthropic-secret" not in str(redact_data({"x-api-key": "synthetic-anthropic-secret"}))
+    assert "synthetic-anthropic-secret" not in str(
+        redact_data({"x-api-key": "synthetic-anthropic-secret"})
+    )
 
 
 @pytest.mark.asyncio
@@ -189,7 +204,8 @@ async def test_anthropic_doctor_uses_read_only_probe(monkeypatch, anthropic_sett
     result = await doctor.check_live_google(anthropic_settings, doctor.default_google_models_check)
     assert result.status == "PASS"
     probe.assert_awaited_once_with(
-        "https://api.anthropic.com/v1/models", method="GET",
+        "https://api.anthropic.com/v1/models",
+        method="GET",
         headers={"x-api-key": "synthetic-key", "anthropic-version": "2023-06-01"},
     )
 
@@ -229,8 +245,11 @@ def test_anthropic_requires_model(monkeypatch, anthropic_settings):
 async def test_anthropic_http_error_includes_redacted_api_reason(monkeypatch, anthropic_settings):
     import httpx
 
-    response = httpx.Response(400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
-                             json={"error": {"message": "temperature is deprecated; synthetic-secret"}})
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"),
+        json={"error": {"message": "temperature is deprecated; synthetic-secret"}},
+    )
     client = AsyncMock()
     client.post.return_value = response
     monkeypatch.setattr("jobapply.utils.llm._get_http_client", lambda: client)
@@ -243,10 +262,13 @@ async def test_anthropic_http_error_includes_redacted_api_reason(monkeypatch, an
 @pytest.mark.asyncio
 async def test_anthropic_can_disable_thinking_for_short_output(monkeypatch, anthropic_settings):
     client = AsyncMock()
-    client.post.return_value = FakeResponse({"content": [{"type": "text", "text": "Cover letter"}],
-                                            "stop_reason": "end_turn"})
+    client.post.return_value = FakeResponse(
+        {"content": [{"type": "text", "text": "Cover letter"}], "stop_reason": "end_turn"}
+    )
     monkeypatch.setattr("jobapply.utils.llm._get_http_client", lambda: client)
-    await GemmaChat(api_key="test-key", max_output_tokens=2048, thinking_enabled=False).ainvoke("write letter")
+    await GemmaChat(api_key="test-key", max_output_tokens=2048, thinking_enabled=False).ainvoke(
+        "write letter"
+    )
     payload = client.post.await_args.kwargs["json"]
     assert payload["thinking"] == {"type": "disabled"}
     assert payload["max_tokens"] == 2048

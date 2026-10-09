@@ -31,7 +31,7 @@ async def get_choice_label(control: Any, page: Any, fallback: str = "Choice ques
                 const labelled = (el.getAttribute('aria-labelledby') || '')
                     .split(/\s+/).filter(id => id && !groupIds.has(id))
                     .map(id => document.getElementById(id))
-                    .filter(node => node && node.tagName !== "LEGEND" && !node.contains(el))
+                    .filter(node => node && node.localName !== "legend" && !node.contains(el))
                     .map(node => node.innerText || '')
                     .join(' ').trim();
                 if (labelled) return labelled;
@@ -42,7 +42,6 @@ async def get_choice_label(control: Any, page: Any, fallback: str = "Choice ques
                 }
                 const previous = el.previousElementSibling;
                 if (previous?.innerText?.trim()) return previous.innerText.trim();
-                const group = el.closest('fieldset, [role="radiogroup"]');
                 const heading = group?.querySelector('legend, label, h1, h2, h3, h4, [data-test-form-element-label]');
                 return (heading?.innerText || '').trim();
             }"""
@@ -167,7 +166,7 @@ def clean_choice_option_label(question: str, label: str) -> str:
     question = " ".join(question.split()).rstrip(" *")
     label = " ".join(label.split())
     if question and label.casefold().startswith(question.casefold()):
-        suffix = label[len(question):]
+        suffix = label[len(question) :]
         if not suffix or suffix[0].isspace() or suffix[0] in ":*-–—":
             return suffix.lstrip(" :*-–—")
     return label
@@ -250,8 +249,12 @@ async def select_live_radio_option(
                 if _normalized_choice_text(current_question) != normalized_question:
                     continue
                 radios = await fieldset.query_selector_all("input[type='radio']")
-                labels = [clean_choice_option_label(question_text, await get_radio_option_label(radio, fieldset))
-                          for radio in radios]
+                labels = [
+                    clean_choice_option_label(
+                        question_text, await get_radio_option_label(radio, fieldset)
+                    )
+                    for radio in radios
+                ]
                 matched = match_choice_index(option_text, labels)
                 if matched is None:
                     raise RuntimeError(
