@@ -82,6 +82,7 @@ async def test_qualification_configuration_failure_is_caught(monkeypatch):
 
     def fail(**kwargs):
         raise RuntimeError("ANTHROPIC_API_KEY is missing")
+
     monkeypatch.setattr("jobapply.nodes.qualification.get_llm", fail)
     state = {
         "current_job": {
