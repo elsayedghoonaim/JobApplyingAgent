@@ -91,9 +91,13 @@ async def generation_node(state: JobApplyState) -> dict:
     except Exception as e:
         error_msg = f"Cover letter generation failed for {current_job.get('title', 'unknown job')}: {redact_string(str(e))}"
         log_event(
-            "error", "generation.failed", bound_text(error_msg),
+            "error",
+            "generation.failed",
+            bound_text(error_msg),
             run_id=str(state.get("run_id") or "") or None,
-            job_id=current_job.get("job_id"), node="generation_node", exc=e,
+            job_id=current_job.get("job_id"),
+            node="generation_node",
+            exc=e,
         )
         errors.append(error_msg)
         updates["application_status"] = "failed"

@@ -165,19 +165,28 @@ class TelegramClient:
             if corr is None or corr.prompt_message_id is None:
                 return False
             async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(f"{self._base_url}/editMessageText", json={
-                    "chat_id": self.settings.telegram_chat_id,
-                    "message_id": corr.prompt_message_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                    "reply_markup": {"inline_keyboard": []},
-                })
+                response = await client.post(
+                    f"{self._base_url}/editMessageText",
+                    json={
+                        "chat_id": self.settings.telegram_chat_id,
+                        "message_id": corr.prompt_message_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                        "reply_markup": {"inline_keyboard": []},
+                    },
+                )
                 response.raise_for_status()
                 data = response.json()
-                return bool(data.get("ok")) or "message is not modified" in str(data.get("description", ""))
+                return bool(data.get("ok")) or "message is not modified" in str(
+                    data.get("description", "")
+                )
         except Exception as exc:
-            log_event("warning", "telegram.answer_mark_failed",
-                      "Could not update the answered question in Telegram.", exc=exc)
+            log_event(
+                "warning",
+                "telegram.answer_mark_failed",
+                "Could not update the answered question in Telegram.",
+                exc=exc,
+            )
             return False
 
     async def _send_single_message(

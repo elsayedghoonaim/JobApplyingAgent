@@ -236,8 +236,10 @@ Rules:
         response = await llm.ainvoke(prompt)
         translated = extract_json_object(response.content)
         translated_question = str(translated.get("question") or "").strip()
-        translated_options = [clean_choice_option_label(translated_question, str(option))
-                              for option in translated.get("options", [])]
+        translated_options = [
+            clean_choice_option_label(translated_question, str(option))
+            for option in translated.get("options", [])
+        ]
         if (
             translated_question
             and len(translated_options) == len(clean_options)
@@ -374,21 +376,37 @@ async def ask_user_for_question(
     async def mark_answer(answer: str, option_index: int | None = None) -> tuple[str, bool]:
         if option_index is None and options:
             normalized = " ".join(answer.casefold().split())
-            option_index = next((i for i, option in enumerate(options)
-                                 if " ".join(option.casefold().split()) == normalized), None)
+            option_index = next(
+                (
+                    i
+                    for i, option in enumerate(options)
+                    if " ".join(option.casefold().split()) == normalized
+                ),
+                None,
+            )
         if options and option_index is None:
             return answer, False
         lines = [f"<b>{escape(display_question[:300])}</b>", ""]
-        if option_index is not None and len(display_options) == len(options or []) and len(display_options) <= 8:
-            lines += [f"{'✅' if i == option_index else '○'} {escape(option[:40])}"
-                      for i, option in enumerate(display_options)]
+        if (
+            option_index is not None
+            and len(display_options) == len(options or [])
+            and len(display_options) <= 8
+        ):
+            lines += [
+                f"{'✅' if i == option_index else '○'} {escape(option[:40])}"
+                for i, option in enumerate(display_options)
+            ]
         else:
             lines.append(f"✅ Answer: {escape(answer[:250])}")
         try:
             await telegram.mark_question_answer(corr_key, "\n".join(lines))
         except Exception as exc:
-            log_event("warning", "telegram_qa.answer_mark_failed",
-                      "Could not mark the answer in Telegram.", exc=exc)
+            log_event(
+                "warning",
+                "telegram_qa.answer_mark_failed",
+                "Could not mark the answer in Telegram.",
+                exc=exc,
+            )
         return answer, False
 
     # Callback presses carry their exact persisted option index: identity comes

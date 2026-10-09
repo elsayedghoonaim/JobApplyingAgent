@@ -286,7 +286,9 @@ async def wait_for_search_results(page, *, timeout_ms: int) -> bool:
         return True
     if await page.query_selector(EMPTY_RESULTS_SELECTOR):
         return False
-    raise RuntimeError("Search results changed before extraction; the query was not marked exhausted.")
+    raise RuntimeError(
+        "Search results changed before extraction; the query was not marked exhausted."
+    )
 
 
 async def get_loaded_card_ids(page) -> list[str]:

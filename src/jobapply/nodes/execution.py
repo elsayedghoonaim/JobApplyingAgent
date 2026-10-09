@@ -980,7 +980,9 @@ async def execution_node(state: JobApplyState) -> dict:
 
                         # Extract option labels
                         option_labels = [
-                            clean_choice_option_label(legend_text, await get_radio_option_label(radio, fieldset))
+                            clean_choice_option_label(
+                                legend_text, await get_radio_option_label(radio, fieldset)
+                            )
                             for radio in radios
                         ]
                         option_labels = [l_opt for l_opt in option_labels if l_opt]
@@ -1114,8 +1116,10 @@ async def execution_node(state: JobApplyState) -> dict:
                         if selected_role_option:
                             continue
                         question = await get_choice_label(group, page)
-                        labels = [await get_role_radio_option_label(option, question)
-                                  for option in role_options]
+                        labels = [
+                            await get_role_radio_option_label(option, question)
+                            for option in role_options
+                        ]
                         role_group_questions.append((question, labels))
 
                     for question, labels in role_group_questions:
