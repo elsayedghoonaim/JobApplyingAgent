@@ -1,4 +1,5 @@
 """Choice labels, answer identity, and persistent Telegram answer marks."""
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -75,6 +76,7 @@ async def test_answer_marks_correct_choice_for_button_and_text(kind):
         reply_option_index=1 if kind == "callback" else None,
     )
     settings = SimpleNamespace(form_qa_timeout_seconds=30, telegram_question_language="English")
+
     async def extract(*args):
         return "No"
     assert await ask_user_for_question(
