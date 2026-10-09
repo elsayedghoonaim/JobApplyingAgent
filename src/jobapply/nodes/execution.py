@@ -48,11 +48,9 @@ from jobapply.execution import (
 )
 from jobapply.execution.controls import (
     _fieldset_question_text,
-)
-from jobapply.execution.controls import (
+    clean_choice_option_label,
+    get_role_radio_option_label,
     select_live_radio_option as _ext_select_live_radio_option,
-)
-from jobapply.execution.controls import (
     select_radio_option as _ext_select_radio_option,
 )
 from jobapply.execution.navigation import (
@@ -77,7 +75,6 @@ from jobapply.nodes.outcomes import (
     resume_was_edited,
     state_list,
 )
-from jobapply.execution.controls import clean_choice_option_label, get_role_radio_option_label
 from jobapply.settings import get_settings
 from jobapply.state import JobApplyState
 from jobapply.utils.account_safety import (
