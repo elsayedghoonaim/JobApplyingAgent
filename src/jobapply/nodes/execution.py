@@ -47,9 +47,9 @@ from jobapply.execution import (
     visible_button_labels,
 )
 from jobapply.execution.controls import (
-    _fieldset_question_text,
     clean_choice_option_label,
     get_role_radio_option_label,
+    _fieldset_question_text,
     select_live_radio_option as _ext_select_live_radio_option,
     select_radio_option as _ext_select_radio_option,
 )
