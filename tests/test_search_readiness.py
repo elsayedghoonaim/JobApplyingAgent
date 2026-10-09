@@ -55,8 +55,14 @@ async def test_slow_page_does_not_exhaust_query(monkeypatch):
     monkeypatch.setattr("jobapply.nodes.search.get_linkedin_page", AsyncMock(return_value=page))
     guard = AsyncMock()
     monkeypatch.setattr("jobapply.nodes.search.guard_page_account_safety", guard)
-    state = {"search_queries": ["Machine Learning Engineer"], "current_query_index": 0,
-             "current_page": 2, "pages_per_query": 100, "seen_job_ids": {"old"}, "errors": []}
+    state = {
+        "search_queries": ["Machine Learning Engineer"],
+        "current_query_index": 0,
+        "current_page": 2,
+        "pages_per_query": 100,
+        "seen_job_ids": {"old"},
+        "errors": [],
+    }
     result = await search_node(state)
     assert result["search_failed"] is True
     assert result["query_exhausted"] is False
@@ -75,9 +81,16 @@ async def test_qualification_configuration_failure_is_caught(monkeypatch):
     def fail(**kwargs):
         raise RuntimeError("ANTHROPIC_API_KEY is missing")
     monkeypatch.setattr("jobapply.nodes.qualification.get_llm", fail)
-    state = {"current_job": {"job_id": "test", "title": "Machine Learning Engineer",
-                             "company": "Ampace", "description": "Python ML"},
-             "seen_job_ids": set(), "errors": []}
+    state = {
+        "current_job": {
+            "job_id": "test",
+            "title": "Machine Learning Engineer",
+            "company": "Ampace",
+            "description": "Python ML",
+        },
+        "seen_job_ids": set(),
+        "errors": [],
+    }
     result = await qualification_node(state)
     assert result["qualification_result"]["qualified"] is False
     assert "ANTHROPIC_API_KEY is missing" in result["errors"][0]
