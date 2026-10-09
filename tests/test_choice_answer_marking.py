@@ -79,6 +79,7 @@ async def test_answer_marks_correct_choice_for_button_and_text(kind):
 
     async def extract(*args):
         return "No"
+
     assert await ask_user_for_question(
         "Eligible?",
         {"job_id": "1"},
@@ -98,8 +99,10 @@ async def test_unmatched_answer_is_not_marked_as_selected():
     telegram.send_and_wait_for_reply.return_value = CorrelationWaitResult(
         status=CorrelationStatus.REPLIED, reply_text="Maybe"
     )
+
     async def extract(*args):
         return "Maybe"
+
     await ask_user_for_question(
         "Eligible?",
         {"job_id": "1"},
