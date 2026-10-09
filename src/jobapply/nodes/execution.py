@@ -47,19 +47,29 @@ from jobapply.execution import (
     visible_button_labels,
 )
 from jobapply.execution.controls import (
+    _fieldset_question_text,
     clean_choice_option_label,
     get_role_radio_option_label,
-    _fieldset_question_text,
+)
+from jobapply.execution.controls import (
     select_live_radio_option as _ext_select_live_radio_option,
+)
+from jobapply.execution.controls import (
     select_radio_option as _ext_select_radio_option,
 )
 from jobapply.execution.navigation import (
     wait_for_submission_confirmation as _ext_wait_for_submission_confirmation,
+)
+from jobapply.execution.navigation import (
     wait_for_submission_or_safety as _ext_wait_for_submission_or_safety,
 )
 from jobapply.execution.telegram_qa import (
     ask_user_for_question as _ext_ask_user_for_question,
+)
+from jobapply.execution.telegram_qa import (
     extract_answer_from_reply as _ext_extract_answer_from_reply,
+)
+from jobapply.execution.telegram_qa import (
     translate_question_for_telegram as _ext_translate_question_for_telegram,
 )
 from jobapply.models.application import AttemptStatus
@@ -77,8 +87,10 @@ from jobapply.utils.account_safety import (
     AccountSafetyBarrierType,
     AccountSafetyDetection,
     guard_page_account_safety,
-    inspect_page_account_safety as _default_inspect_page_account_safety,
     sanitize_url_for_evidence,
+)
+from jobapply.utils.account_safety import (
+    inspect_page_account_safety as _default_inspect_page_account_safety,
 )
 from jobapply.utils.attempts import AttemptRepository, QuotaRepository
 from jobapply.utils.browser import (
