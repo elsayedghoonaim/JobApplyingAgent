@@ -59,7 +59,9 @@ async def test_generation_prepares_base_resume_without_approval_or_edit_call(
         }
     )
 
-    mock_get_llm.assert_called_once_with(temperature=0.4, max_output_tokens=2048, thinking_enabled=False)
+    mock_get_llm.assert_called_once_with(
+        temperature=0.4, max_output_tokens=2048, thinking_enabled=False
+    )
     llm.ainvoke.assert_awaited_once()
     assert result["resume_path"].endswith("resume.pdf")
     assert result["edits_urgent"] is False
