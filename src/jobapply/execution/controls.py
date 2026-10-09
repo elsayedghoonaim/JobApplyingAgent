@@ -31,7 +31,7 @@ async def get_choice_label(control: Any, page: Any, fallback: str = "Choice ques
                 const labelled = (el.getAttribute('aria-labelledby') || '')
                     .split(/\s+/).filter(id => id && !groupIds.has(id))
                     .map(id => document.getElementById(id))
-                    .filter(node => node && node.tagName !== "LEGEND" && !node.contains(el))
+                    .filter(node => node && node.localName !== "legend" && !node.contains(el))
                     .map(node => node.innerText || '')
                     .join(' ').trim();
                 if (labelled) return labelled;
@@ -42,7 +42,6 @@ async def get_choice_label(control: Any, page: Any, fallback: str = "Choice ques
                 }
                 const previous = el.previousElementSibling;
                 if (previous?.innerText?.trim()) return previous.innerText.trim();
-                const group = el.closest('fieldset, [role="radiogroup"]');
                 const heading = group?.querySelector('legend, label, h1, h2, h3, h4, [data-test-form-element-label]');
                 return (heading?.innerText || '').trim();
             }"""
